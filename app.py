@@ -2,9 +2,9 @@
 
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
-from config_manager import DUCAT_VALUES, load_config
+from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_config, load_trades
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
@@ -24,9 +24,12 @@ class DucatCalculatorApp:
 
         self._build_widgets()
         self.refresh_display()
+        self.refresh_lifetime_totals()
 
     def _build_widgets(self):
-        ttk.Style().configure("TButton", font=("Segoe UI", 10))
+        style = ttk.Style()
+        style.configure("TButton", font=("Segoe UI", 10))
+        style.configure("LogTrade.TButton", font=("Segoe UI", 11, "bold"))
 
         container = ttk.Frame(self.root, padding=12)
         container.grid(row=0, column=0)
@@ -46,8 +49,13 @@ class DucatCalculatorApp:
             button.grid(row=0, column=col, padx=4, pady=4)
             self.ducat_buttons.append(button)
 
-        totals_frame = ttk.LabelFrame(container, text="Current Trade", padding=8)
-        totals_frame.grid(row=1, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(0, 12))
+        middle_frame = ttk.Frame(container)
+        middle_frame.grid(row=1, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(0, 12))
+        middle_frame.columnconfigure(0, weight=1)
+        middle_frame.columnconfigure(1, weight=1)
+
+        totals_frame = ttk.LabelFrame(middle_frame, text="Current Trade", padding=8)
+        totals_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         self.items_label = ttk.Label(totals_frame, font=("Segoe UI", 11))
         self.items_label.grid(row=0, column=0, sticky="w", pady=2)
@@ -58,13 +66,27 @@ class DucatCalculatorApp:
         self.platinum_label = ttk.Label(totals_frame, font=("Segoe UI", 11))
         self.platinum_label.grid(row=2, column=0, sticky="w", pady=2)
 
+        lifetime_frame = ttk.LabelFrame(middle_frame, text="Lifetime Totals", padding=8)
+        lifetime_frame.grid(row=0, column=1, sticky="nsew")
+
+        self.lifetime_ducats_label = ttk.Label(lifetime_frame, font=("Segoe UI", 11))
+        self.lifetime_ducats_label.grid(row=0, column=0, sticky="w", pady=2)
+
+        self.lifetime_platinum_label = ttk.Label(lifetime_frame, font=("Segoe UI", 11))
+        self.lifetime_platinum_label.grid(row=1, column=0, sticky="w", pady=2)
+
+        self.lifetime_avg_label = ttk.Label(lifetime_frame, font=("Segoe UI", 11))
+        self.lifetime_avg_label.grid(row=2, column=0, sticky="w", pady=2)
+
         controls_frame = ttk.Frame(container)
         controls_frame.grid(row=2, column=0, columnspan=len(DUCAT_VALUES))
 
         ttk.Button(controls_frame, text="Undo", command=self.undo_item).grid(row=0, column=0, padx=4)
         ttk.Button(controls_frame, text="Reset", command=self.reset_trade).grid(row=0, column=1, padx=4)
-        ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=2, padx=4)
-        ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=3, padx=4)
+        ttk.Button(controls_frame, text="Log Trade", style="LogTrade.TButton", command=self.log_trade).grid(row=0, column=2, padx=4)
+        ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=3, padx=4)
+        ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=4, padx=4)
+        ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
 
     def add_item(self, ducat_value):
         if len(self.history) >= TRADE_ITEM_LIMIT:
@@ -80,6 +102,35 @@ class DucatCalculatorApp:
     def reset_trade(self):
         self.history.clear()
         self.refresh_display()
+
+    def log_trade(self):
+        if not self.history:
+            return
+        total_ducats = sum(self.history)
+        total_platinum = sum(self.price_map[d] for d in self.history)
+        append_trade(total_ducats, total_platinum)
+        self.reset_trade()
+        self.refresh_lifetime_totals()
+
+    def refresh_lifetime_totals(self):
+        trades = load_trades()
+        total_ducats = sum(t.get("total_ducats", 0) for t in trades)
+        total_platinum = sum(t.get("total_platinum", 0) for t in trades)
+        avg = round(total_ducats / total_platinum, 1) if total_platinum else "—"
+
+        self.lifetime_ducats_label.config(text=f"Total Ducats: {total_ducats}")
+        self.lifetime_platinum_label.config(text=f"Total Platinum: {total_platinum}")
+        self.lifetime_avg_label.config(text=f"Avg Ducats / Plat: {avg}")
+
+    def reset_trade_total(self):
+        confirmed = messagebox.askyesno(
+            title="Reset all trade history?",
+            message="This will permanently delete all records in trades.json. This cannot be undone.",
+            icon=messagebox.WARNING,
+        )
+        if confirmed:
+            clear_trades()
+            self.refresh_lifetime_totals()
 
     def open_settings(self):
         SettingsWindow(self)
