@@ -1,5 +1,6 @@
 """Main window for the Warframe Ducat/Platinum Trade Calculator."""
 
+import os
 import tkinter as tk
 from tkinter import ttk
 
@@ -8,13 +9,7 @@ from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
 
-RARITY_LABELS = {
-    15: "Common",
-    25: "Vaulted Common",
-    45: "Uncommon",
-    65: "Vaulted Uncommon",
-    100: "Rare",
-}
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 
 class DucatCalculatorApp:
@@ -25,6 +20,7 @@ class DucatCalculatorApp:
 
         self.price_map = load_config()
         self.history = []
+        self.ducat_icon = tk.PhotoImage(file=os.path.join(ASSETS_DIR, "ducat_icon.png"))
 
         self._build_widgets()
         self.refresh_display()
@@ -37,10 +33,11 @@ class DucatCalculatorApp:
         ducat_frame.grid(row=0, column=0, columnspan=len(DUCAT_VALUES), pady=(0, 12))
 
         for col, ducat_value in enumerate(DUCAT_VALUES):
-            label = f"{ducat_value} Ducats\n({RARITY_LABELS[ducat_value]})"
             button = ttk.Button(
                 ducat_frame,
-                text=label,
+                text=f"{ducat_value} ",
+                image=self.ducat_icon,
+                compound="right",
                 command=lambda v=ducat_value: self.add_item(v),
             )
             button.grid(row=0, column=col, padx=4, pady=4)
