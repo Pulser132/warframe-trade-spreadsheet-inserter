@@ -32,6 +32,7 @@ class DucatCalculatorApp:
         ducat_frame = ttk.LabelFrame(container, text="Add Item by Ducat Value", padding=8)
         ducat_frame.grid(row=0, column=0, columnspan=len(DUCAT_VALUES), pady=(0, 12))
 
+        self.ducat_buttons = []
         for col, ducat_value in enumerate(DUCAT_VALUES):
             button = ttk.Button(
                 ducat_frame,
@@ -41,6 +42,7 @@ class DucatCalculatorApp:
                 command=lambda v=ducat_value: self.add_item(v),
             )
             button.grid(row=0, column=col, padx=4, pady=4)
+            self.ducat_buttons.append(button)
 
         totals_frame = ttk.LabelFrame(container, text="Current Trade", padding=8)
         totals_frame.grid(row=1, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(0, 12))
@@ -63,6 +65,8 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=3, padx=4)
 
     def add_item(self, ducat_value):
+        if len(self.history) >= TRADE_ITEM_LIMIT:
+            return
         self.history.append(ducat_value)
         self.refresh_display()
 
@@ -98,12 +102,10 @@ class DucatCalculatorApp:
         self.ducats_label.config(text=f"Total Ducats: {total_ducats}")
         self.platinum_label.config(text=f"Total Platinum: {total_platinum}")
 
-        if item_count == TRADE_ITEM_LIMIT:
-            color = "#1a7f1a"
-        elif item_count > TRADE_ITEM_LIMIT:
-            color = "#b22222"
-        else:
-            color = ""
-
+        is_full = item_count >= TRADE_ITEM_LIMIT
+        color = "#1a7f1a" if is_full else ""
         for label in (self.items_label, self.ducats_label, self.platinum_label):
             label.config(foreground=color)
+
+        for button in self.ducat_buttons:
+            button.state(["disabled" if is_full else "!disabled"])
