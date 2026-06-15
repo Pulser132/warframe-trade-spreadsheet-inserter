@@ -26,6 +26,8 @@ class DucatCalculatorApp:
         self.refresh_display()
 
     def _build_widgets(self):
+        ttk.Style().configure("TButton", font=("Segoe UI", 10))
+
         container = ttk.Frame(self.root, padding=12)
         container.grid(row=0, column=0)
 
