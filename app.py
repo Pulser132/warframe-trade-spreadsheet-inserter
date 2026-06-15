@@ -60,6 +60,7 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Undo", command=self.undo_item).grid(row=0, column=0, padx=4)
         ttk.Button(controls_frame, text="Reset", command=self.reset_trade).grid(row=0, column=1, padx=4)
         ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=2, padx=4)
+        ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=3, padx=4)
 
     def add_item(self, ducat_value):
         self.history.append(ducat_value)
@@ -76,6 +77,17 @@ class DucatCalculatorApp:
 
     def open_settings(self):
         SettingsWindow(self)
+
+    def copy_wtb_message(self):
+        ducat_values = "/".join(str(v) for v in DUCAT_VALUES)
+        platinum_values = "/".join(str(self.price_map[v]) for v in DUCAT_VALUES)
+        message = (
+            f"WTB Prime Junk :ducats: {ducat_values} :ducats: "
+            f"= :platinum: {platinum_values} :platinum: Full trades only."
+        )
+        self.root.clipboard_clear()
+        self.root.clipboard_append(message)
+        self.root.update()
 
     def refresh_display(self):
         item_count = len(self.history)
