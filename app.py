@@ -23,6 +23,7 @@ class DucatCalculatorApp:
         self.ducat_icon = tk.PhotoImage(file=os.path.join(ASSETS_DIR, "ducat_icon.png"))
 
         self._hotkey_listener = None
+        self._status_after_id = None
         self._build_widgets()
         self.refresh_display()
         self.refresh_lifetime_totals()
@@ -49,28 +50,60 @@ class DucatCalculatorApp:
         except Exception:
             self._hotkey_listener = None
 
+    def _set_status(self, msg, duration_ms=4000):
+        """Show a transient message in the status bar, auto-clearing after duration_ms."""
+        if self._status_after_id:
+            self.root.after_cancel(self._status_after_id)
+            self._status_after_id = None
+        self._status_label.config(text=msg)
+        if msg and duration_ms > 0:
+            self._status_after_id = self.root.after(
+                duration_ms, lambda: self._status_label.config(text="")
+            )
+
     def scan_trade_window(self):
+        self._set_status("Scanning…", duration_ms=0)
+        self.root.update()  # force redraw before the blocking OCR call
+
         try:
             import ocr_scanner
-            ducat_values = ocr_scanner.scan()
+            results, skipped = ocr_scanner.scan()
         except RuntimeError as e:
+            self._set_status("")
             messagebox.showerror("OCR Scan Error", str(e))
             return
 
-        if not ducat_values:
-            messagebox.showinfo("OCR Scan", "No trade slots detected on screen.")
+        if not results and skipped == 0:
+            self._set_status("OCR: no trade slots detected.")
             return
 
         added = 0
-        for v in ducat_values:
+        for item in results:
+            v = item["ducats"]
             if v in self.price_map and len(self.history) < TRADE_ITEM_LIMIT:
                 self.add_item(v)
                 added += 1
 
-        if added == 0:
-            messagebox.showinfo("OCR Scan", "No recognizable prime items detected.")
+        if added > 0:
+            names = ", ".join(
+                f"{item['name'].title()} ({item['ducats']})"
+                for item in results[:added]
+            )
+            msg = f"OCR: added {added} item{'s' if added != 1 else ''} — {names}"
+            if skipped:
+                msg += f" ({skipped} unresolved)"
+            self._set_status(msg, duration_ms=6000)
+        elif not results:
+            n = skipped
+            self._set_status(
+                f"OCR: {n} slot{'s' if n != 1 else ''} detected but no items could be resolved."
+            )
+        else:
+            self._set_status("OCR: no recognizable prime items detected.")
 
     def _on_close(self):
+        if self._status_after_id:
+            self.root.after_cancel(self._status_after_id)
         if self._hotkey_listener is not None:
             self._hotkey_listener.stop()
         self.root.destroy()
@@ -138,6 +171,13 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
         ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet).grid(row=0, column=6, padx=4)
 
+        self._status_label = ttk.Label(
+            container, text="", anchor="w", font=("Segoe UI", 9), foreground="grey"
+        )
+        self._status_label.grid(
+            row=3, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(8, 0)
+        )
+
     def add_item(self, ducat_value):
         if len(self.history) >= TRADE_ITEM_LIMIT:
             return
@@ -161,6 +201,7 @@ class DucatCalculatorApp:
         append_trade(total_ducats, total_platinum)
         self.reset_trade()
         self.refresh_lifetime_totals()
+        self._set_status("Trade logged.")
 
     def refresh_lifetime_totals(self):
         trades = load_trades()
@@ -227,6 +268,7 @@ class DucatCalculatorApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(message)
         self.root.update()
+        self._set_status("WTB message copied to clipboard.")
 
     def refresh_display(self):
         item_count = len(self.history)

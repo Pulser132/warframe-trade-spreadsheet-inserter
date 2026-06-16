@@ -18,10 +18,13 @@ _LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
 
 
 def scan(lookup_path=None):
-    """Capture the screen, detect trade slots, OCR each, and return resolved ducat values.
+    """Capture the screen, detect trade slots, OCR each, and return resolved items.
 
-    Returns a list of int ducat values (may be empty if nothing is detected).
-    Raises RuntimeError with a user-friendly message on any failure.
+    Returns (results, skipped) where:
+      results: list of {"name": str, "ducats": int} for each resolved slot
+      skipped: count of detected slots whose names could not be resolved
+    Both are 0/empty when no trade slots are found at all.
+    Raises RuntimeError with a user-friendly message on any hard failure.
     """
     if lookup_path is None:
         lookup_path = _LOOKUP_PATH
@@ -62,9 +65,10 @@ def scan(lookup_path=None):
     slot_crops = _detect_slots(img_bgr)
 
     if not slot_crops:
-        return []
+        return [], 0
 
     results = []
+    skipped = 0
     for crop_bgr in slot_crops[:6]:
         crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(crop_rgb)
@@ -73,11 +77,13 @@ def scan(lookup_path=None):
             (pil_img.width * 2, pil_img.height * 2), Image.LANCZOS
         )
         text = pytesseract.image_to_string(pil_img, config="--psm 7").strip()
-        value = _resolve(text, lookup)
+        matched_name, value = _resolve(text, lookup)
         if value is not None:
-            results.append(value)
+            results.append({"name": matched_name, "ducats": value})
+        else:
+            skipped += 1
 
-    return results
+    return results, skipped
 
 
 def _detect_slots(img_bgr):
@@ -156,14 +162,17 @@ def _normalize(text):
 
 
 def _resolve(ocr_text, lookup):
-    """Return the ducat value for an OCR'd item name, or None if unresolved."""
+    """Return (matched_name, ducat_value), or (None, None) if unresolved.
+
+    matched_name is the clean lookup-table key, not the raw OCR text.
+    """
     if not ocr_text:
-        return None
+        return None, None
     norm = _normalize(ocr_text)
     if norm in lookup:
-        return lookup[norm]
+        return norm, lookup[norm]
     # Fuzzy fallback using stdlib difflib (cutoff=0.75 to avoid false positives)
     matches = difflib.get_close_matches(norm, lookup.keys(), n=1, cutoff=0.75)
     if matches:
-        return lookup[matches[0]]
-    return None
+        return matches[0], lookup[matches[0]]
+    return None, None
