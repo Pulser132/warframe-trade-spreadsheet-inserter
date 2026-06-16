@@ -6,6 +6,8 @@ from datetime import datetime
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+API_CONFIG_PATH = os.path.join(_BASE_DIR, "configs", "api_config.json")
+
 CONFIGS_DIR = os.path.join(_BASE_DIR, "configs")
 CONFIG_PATH = os.path.join(CONFIGS_DIR, "config.json")
 
@@ -84,7 +86,29 @@ def append_trade(total_ducats, total_platinum):
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "total_ducats": total_ducats,
         "total_platinum": total_platinum,
+        "exported": False,
     })
 
     with open(TRADES_PATH, "w", encoding="utf-8") as f:
         json.dump(trades, f, indent=2)
+
+
+def save_trades(trades):
+    """Write the full trades list back to disk (used to persist exported flags)."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(TRADES_PATH, "w", encoding="utf-8") as f:
+        json.dump(trades, f, indent=2)
+
+
+def load_api_config():
+    """Return the API config dict, or raise RuntimeError with a friendly message."""
+    if not os.path.exists(API_CONFIG_PATH):
+        raise RuntimeError(
+            "configs/api_config.json not found.\n"
+            "Copy api_config.example.json to configs/api_config.json and fill in your values."
+        )
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"Failed to read configs/api_config.json:\n{e}")

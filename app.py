@@ -4,7 +4,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_config, load_trades
+from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_api_config, load_config, load_trades, save_trades
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
@@ -87,6 +87,7 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=3, padx=4)
         ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=4, padx=4)
         ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
+        ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet).grid(row=0, column=6, padx=4)
 
     def add_item(self, ducat_value):
         if len(self.history) >= TRADE_ITEM_LIMIT:
@@ -131,6 +132,38 @@ class DucatCalculatorApp:
         if confirmed:
             clear_trades()
             self.refresh_lifetime_totals()
+
+    def export_to_spreadsheet(self):
+        try:
+            api_config = load_api_config()
+        except RuntimeError as e:
+            messagebox.showerror("Export Error", str(e))
+            return
+
+        trades = load_trades()
+        pending = [t for t in trades if not t.get("exported", False)]
+
+        if not pending:
+            messagebox.showinfo("Export to Spreadsheet", "No new trades to export.")
+            return
+
+        try:
+            import sheets_exporter
+            updated = sheets_exporter.export_trades(pending, api_config)
+        except RuntimeError as e:
+            messagebox.showerror("Export Error", str(e))
+            return
+
+        exported_timestamps = {t["timestamp"] for t in updated}
+        for t in trades:
+            if t["timestamp"] in exported_timestamps:
+                t["exported"] = True
+        save_trades(trades)
+
+        messagebox.showinfo(
+            "Export to Spreadsheet",
+            f"Successfully exported {len(updated)} trade(s) to Google Sheets.",
+        )
 
     def open_settings(self):
         SettingsWindow(self)

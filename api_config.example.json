@@ -1,0 +1,4 @@
+{
+  "spreadsheet_id": "YOUR_SPREADSHEET_ID_HERE",
+  "service_account_file": "configs/your-service-account-key.json"
+}
