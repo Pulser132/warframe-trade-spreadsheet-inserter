@@ -29,7 +29,8 @@ def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        price_map = {int(k): int(v) for k, v in raw.items()}
+        price_key_strs = {str(v) for v in DUCAT_VALUES}
+        price_map = {int(k): int(v) for k, v in raw.items() if k in price_key_strs}
         for ducat_value in DUCAT_VALUES:
             price_map.setdefault(ducat_value, DEFAULT_PRICE_MAP[ducat_value])
         return price_map
@@ -39,10 +40,40 @@ def load_config():
 
 
 def save_config(price_map):
-    """Persist the ducat -> platinum price map to disk."""
+    """Persist the ducat -> platinum price map, preserving other keys (e.g. ocr_hotkey)."""
     os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+    except Exception:
+        existing = {}
+    price_key_strs = {str(v) for v in DUCAT_VALUES}
+    config = {k: v for k, v in existing.items() if k not in price_key_strs}
+    config.update({str(k): v for k, v in price_map.items()})
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump({str(k): v for k, v in price_map.items()}, f, indent=2)
+        json.dump(config, f, indent=2)
+
+
+def load_ocr_hotkey():
+    """Return the configured OCR hotkey string, defaulting to '<F8>' if unset."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("ocr_hotkey", "<F8>")
+    except Exception:
+        return "<F8>"
+
+
+def save_ocr_hotkey(hotkey):
+    """Write the OCR hotkey string to config.json, preserving all other keys."""
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    config["ocr_hotkey"] = hotkey
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
 
 
 def load_trades():

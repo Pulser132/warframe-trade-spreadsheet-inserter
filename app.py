@@ -4,7 +4,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_api_config, load_config, load_trades, save_trades
+from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_api_config, load_config, load_ocr_hotkey, load_trades, save_trades
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
@@ -22,9 +22,58 @@ class DucatCalculatorApp:
         self.history = []
         self.ducat_icon = tk.PhotoImage(file=os.path.join(ASSETS_DIR, "ducat_icon.png"))
 
+        self._hotkey_listener = None
         self._build_widgets()
         self.refresh_display()
         self.refresh_lifetime_totals()
+        self._setup_ocr_hotkey()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _setup_ocr_hotkey(self):
+        if self._hotkey_listener is not None:
+            self._hotkey_listener.stop()
+            self._hotkey_listener = None
+
+        hotkey = load_ocr_hotkey()
+        try:
+            from pynput import keyboard
+        except ImportError:
+            return
+
+        def _on_trigger():
+            self.root.after(0, self.scan_trade_window)
+
+        try:
+            self._hotkey_listener = keyboard.GlobalHotKeys({hotkey: _on_trigger})
+            self._hotkey_listener.start()
+        except Exception:
+            self._hotkey_listener = None
+
+    def scan_trade_window(self):
+        try:
+            import ocr_scanner
+            ducat_values = ocr_scanner.scan()
+        except RuntimeError as e:
+            messagebox.showerror("OCR Scan Error", str(e))
+            return
+
+        if not ducat_values:
+            messagebox.showinfo("OCR Scan", "No trade slots detected on screen.")
+            return
+
+        added = 0
+        for v in ducat_values:
+            if v in self.price_map and len(self.history) < TRADE_ITEM_LIMIT:
+                self.add_item(v)
+                added += 1
+
+        if added == 0:
+            messagebox.showinfo("OCR Scan", "No recognizable prime items detected.")
+
+    def _on_close(self):
+        if self._hotkey_listener is not None:
+            self._hotkey_listener.stop()
+        self.root.destroy()
 
     def _build_widgets(self):
         style = ttk.Style()

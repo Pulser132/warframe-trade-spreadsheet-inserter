@@ -1,2 +1,10 @@
+# Google Sheets export
 google-api-python-client
 google-auth
+
+# OCR trade scanner
+# Also requires the Tesseract-OCR binary: https://github.com/UB-Mannheim/tesseract/wiki
+Pillow
+pytesseract
+opencv-python
+pynput
