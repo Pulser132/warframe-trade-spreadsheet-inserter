@@ -4,3 +4,6 @@ CLAUDE.md
 data/
 configs/
 Todo/
+scripts/node_modules/
+scripts/package-lock.json
+.claude

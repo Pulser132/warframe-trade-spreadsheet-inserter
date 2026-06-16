@@ -12,6 +12,7 @@ import difflib
 import json
 import os
 import re
+import subprocess
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
@@ -20,10 +21,16 @@ _LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
 def scan(lookup_path=None):
     """Capture the screen, detect trade slots, OCR each, and return resolved items.
 
-    Returns (results, skipped) where:
-      results: list of {"name": str, "ducats": int} for each resolved slot
+    Resolution is cache-aside: each OCR'd name is matched against the local cache
+    first (exact, then fuzzy); cache misses are batched into a single @wfcd/items
+    lookup and appended back to the cache for next time.
+
+    Returns (results, skipped, resolver_unavailable) where:
+      results: list of {"name": str, "ducats": int, "source": "cache"|"fetched"}
       skipped: count of detected slots whose names could not be resolved
-    Both are 0/empty when no trade slots are found at all.
+      resolver_unavailable: True if there were misses but Node/@wfcd/items could
+        not be reached (callers surface a 'run npm install' hint)
+    results is empty / skipped is 0 when no trade slots are found at all.
     Raises RuntimeError with a user-friendly message on any hard failure.
     """
     if lookup_path is None:
@@ -65,10 +72,10 @@ def scan(lookup_path=None):
     slot_crops = _detect_slots(img_bgr)
 
     if not slot_crops:
-        return [], 0
+        return [], 0, False
 
-    results = []
-    skipped = 0
+    # OCR every detected slot first.
+    slot_texts = []
     for crop_bgr in slot_crops[:6]:
         crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(crop_rgb)
@@ -76,14 +83,44 @@ def scan(lookup_path=None):
         pil_img = pil_img.resize(
             (pil_img.width * 2, pil_img.height * 2), Image.LANCZOS
         )
-        text = pytesseract.image_to_string(pil_img, config="--psm 7").strip()
-        matched_name, value = _resolve(text, lookup)
-        if value is not None:
-            results.append({"name": matched_name, "ducats": value})
-        else:
-            skipped += 1
+        slot_texts.append(
+            pytesseract.image_to_string(pil_img, config="--psm 7").strip()
+        )
 
-    return results, skipped
+    # Pass 1: resolve from the local cache (no Node).
+    entries = []   # per-slot dict, or None for an unresolved slot
+    misses = []    # (slot_index, normalized_query) for cache misses
+    for i, text in enumerate(slot_texts):
+        name, value = _resolve(text, lookup)
+        if value is not None:
+            entries.append({"name": name, "ducats": value, "source": "cache"})
+        else:
+            entries.append(None)
+            norm = _normalize(text)
+            if norm:
+                misses.append((i, norm))
+
+    # Pass 2: resolve cache misses against @wfcd/items in one batched call.
+    resolver_unavailable = False
+    if misses:
+        unique_queries = sorted({q for _, q in misses})
+        fetched, resolver_unavailable = _resolve_via_wfcd(unique_queries)
+        new_entries = {}
+        for i, q in misses:
+            match = fetched.get(q)
+            if match:
+                entries[i] = {
+                    "name": match["name"],
+                    "ducats": match["ducats"],
+                    "source": "fetched",
+                }
+                new_entries[match["name"]] = match["ducats"]
+        if new_entries:
+            _append_cache(lookup_path, new_entries)
+
+    results = [e for e in entries if e is not None]
+    skipped = sum(1 for e in entries if e is None)
+    return results, skipped, resolver_unavailable
 
 
 def _detect_slots(img_bgr):
@@ -139,13 +176,15 @@ def _detect_slots(img_bgr):
 
 
 def _load_lookup(path):
-    """Load and normalize the ducat lookup table, raising RuntimeError if missing."""
+    """Load and normalize the ducat cache. A missing file means an empty cache.
+
+    The cache is self-warming: unknown items are fetched from @wfcd/items and
+    appended on the fly (see _resolve_via_wfcd), so a fresh install with no cache
+    file is fine. A file that exists but can't be parsed is a real error and is
+    surfaced to the caller.
+    """
     if not os.path.exists(path):
-        raise RuntimeError(
-            "data/ducat_lookup.json not found.\n"
-            "Generate it with the ducat-lookup scraper, or copy\n"
-            "ducat_lookup.example.json to data/ducat_lookup.json as a starter."
-        )
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -176,3 +215,82 @@ def _resolve(ocr_text, lookup):
     if matches:
         return matches[0], lookup[matches[0]]
     return None, None
+
+
+def _resolve_via_wfcd(queries):
+    """Resolve unknown item names against @wfcd/items via the Node helper.
+
+    Batched: one subprocess call for all queries. Returns
+    (matches, resolver_unavailable) where matches maps a normalized query to
+    {"name": normalized_canonical_name, "ducats": int}. resolver_unavailable is
+    True when Node or scripts/node_modules is missing, or the call otherwise
+    fails — callers treat that as "leave these unresolved" rather than erroring.
+    """
+    script_dir = os.path.join(_BASE_DIR, "scripts")
+    script = os.path.join(script_dir, "wf_ducat_lookup.js")
+    node_modules = os.path.join(script_dir, "node_modules")
+    if not os.path.exists(script) or not os.path.isdir(node_modules):
+        return {}, True
+
+    cmd = ["node", "wf_ducat_lookup.js", "--resolve-json", *queries]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=script_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}, True
+    if proc.returncode != 0:
+        return {}, True
+
+    try:
+        data = json.loads(proc.stdout)
+    except (ValueError, TypeError):
+        return {}, True
+    if not isinstance(data, list):
+        return {}, True
+
+    matches = {}
+    for entry in data:
+        query = entry.get("query")
+        name = entry.get("name")
+        ducats = entry.get("ducats")
+        if query and name and ducats is not None:
+            try:
+                matches[_normalize(query)] = {
+                    "name": _normalize(name),
+                    "ducats": int(ducats),
+                }
+            except (TypeError, ValueError):
+                continue
+    return matches, False
+
+
+def _append_cache(path, new_entries):
+    """Merge newly-resolved {name: ducats} into the cache JSON via an atomic write."""
+    existing = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, ValueError):
+            existing = {}
+
+    changed = False
+    for name, ducats in new_entries.items():
+        if existing.get(name) != ducats:
+            existing[name] = ducats
+            changed = True
+    if not changed:
+        return
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)

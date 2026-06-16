@@ -1,0 +1,7 @@
+{
+  "name": "wf-ducat-tools",
+  "private": true,
+  "dependencies": {
+    "@wfcd/items": "latest"
+  }
+}

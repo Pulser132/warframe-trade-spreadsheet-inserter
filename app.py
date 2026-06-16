@@ -67,7 +67,7 @@ class DucatCalculatorApp:
 
         try:
             import ocr_scanner
-            results, skipped = ocr_scanner.scan()
+            results, skipped, resolver_unavailable = ocr_scanner.scan()
         except RuntimeError as e:
             self._set_status("")
             messagebox.showerror("OCR Scan Error", str(e))
@@ -77,27 +77,40 @@ class DucatCalculatorApp:
             self._set_status("OCR: no trade slots detected.")
             return
 
-        added = 0
+        added_items = []
         for item in results:
             v = item["ducats"]
             if v in self.price_map and len(self.history) < TRADE_ITEM_LIMIT:
                 self.add_item(v)
-                added += 1
+                added_items.append(item)
 
-        if added > 0:
+        if skipped and resolver_unavailable:
+            unresolved_note = f"{skipped} unresolved — run: npm install in scripts/"
+        elif skipped:
+            unresolved_note = f"{skipped} unresolved"
+        else:
+            unresolved_note = ""
+
+        if added_items:
             names = ", ".join(
-                f"{item['name'].title()} ({item['ducats']})"
-                for item in results[:added]
+                f"{item['name'].title()} ({item['ducats']})" for item in added_items
             )
-            msg = f"OCR: added {added} item{'s' if added != 1 else ''} — {names}"
-            if skipped:
-                msg += f" ({skipped} unresolved)"
+            new_count = sum(1 for item in added_items if item.get("source") == "fetched")
+            notes = []
+            if new_count:
+                notes.append(f"{new_count} new from @wfcd/items")
+            if unresolved_note:
+                notes.append(unresolved_note)
+            count = len(added_items)
+            msg = f"OCR: added {count} item{'s' if count != 1 else ''} — {names}"
+            if notes:
+                msg += " (" + "; ".join(notes) + ")"
             self._set_status(msg, duration_ms=6000)
         elif not results:
-            n = skipped
-            self._set_status(
-                f"OCR: {n} slot{'s' if n != 1 else ''} detected but no items could be resolved."
-            )
+            msg = f"OCR: {skipped} slot{'s' if skipped != 1 else ''} detected but no items could be resolved."
+            if resolver_unavailable:
+                msg += " — run: npm install in scripts/"
+            self._set_status(msg)
         else:
             self._set_status("OCR: no recognizable prime items detected.")
 
