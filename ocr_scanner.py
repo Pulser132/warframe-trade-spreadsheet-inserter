@@ -318,11 +318,23 @@ def _resolve(ocr_text, lookup):
     norm = _normalize(ocr_text)
     if norm in lookup:
         return norm, lookup[norm]
-    # Fuzzy fallback using stdlib difflib (cutoff=0.75 to avoid false positives)
+    # Fuzzy fallback using stdlib difflib (cutoff=0.75 to avoid false positives).
+    # The whole-string ratio over-weights the shared "<prime> <component>" suffix
+    # (e.g. "akbolto prime blueprint" scores 0.86 against "zakti prime blueprint"),
+    # so anchor on the distinctive leading name token before accepting a match.
+    # @wfcd names are "<item-name> prime <component>", so a differing first token
+    # means a different item — defer those to the robust Node resolver in Pass 2.
     matches = difflib.get_close_matches(norm, lookup.keys(), n=1, cutoff=0.75)
-    if matches:
+    if matches and _leading_token_sim(norm, matches[0]) >= 0.7:
         return matches[0], lookup[matches[0]]
     return None, None
+
+
+def _leading_token_sim(query, candidate):
+    """Similarity (0..1) of the first whitespace token of two normalized names."""
+    q = query.split(None, 1)[0] if query else ""
+    c = candidate.split(None, 1)[0] if candidate else ""
+    return difflib.SequenceMatcher(None, q, c).ratio()
 
 
 def _resolve_via_wfcd(queries):

@@ -17,6 +17,7 @@ Each run uses a throwaway cache file, so your real data/ducat_lookup.json is lef
 untouched.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -96,9 +97,16 @@ def main():
     for fname in images:
         path = os.path.join(IMAGES_DIR, fname)
         # Throwaway cache so the real data/ducat_lookup.json isn't modified.
+        # Seed it with a colliding decoy: "zakti prime blueprint" shares the
+        # "<prime> <component>" suffix with many items, so the Python cache-side
+        # fuzzy step (ocr_scanner._resolve) used to mis-match correctly-read names
+        # like "akbolto prime blueprint"/"hydroid prime blueprint" to it (issue
+        # #10). Seeding reproduces the populated-cache condition of the live OCR
+        # hotkey path — an empty cache would bypass _resolve entirely and hide the
+        # regression. Items must still resolve to their true names, not Zakti.
         tmp_cache = os.path.join(tempfile.gettempdir(), f"ocr_test_cache_{fname}.json")
-        if os.path.exists(tmp_cache):
-            os.remove(tmp_cache)
+        with open(tmp_cache, "w", encoding="utf-8") as f:
+            json.dump({"zakti prime blueprint": 100}, f)
 
         try:
             results, skipped, resolver_unavailable, unresolved = ocr_scanner.scan(
