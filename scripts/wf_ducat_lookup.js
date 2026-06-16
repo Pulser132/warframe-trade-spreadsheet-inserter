@@ -177,13 +177,14 @@ if (args[0] === "--generate") {
     if (!item.components) continue;
     for (const comp of item.components) {
       if (!comp.ducats) continue;
-      const fullName = `${item.name} ${comp.name}`.toLowerCase();
+      const fullName = normalize(`${item.name} ${comp.name}`);
       lookup[fullName] = comp.ducats;
     }
   }
 
-  fs.writeFileSync(outPath, JSON.stringify(lookup, null, 2));
-  console.log(`Wrote ${Object.keys(lookup).length} entries to ${outPath}`);
+  const sorted = Object.fromEntries(Object.entries(lookup).sort(([a], [b]) => a.localeCompare(b)));
+  fs.writeFileSync(outPath, JSON.stringify(sorted, null, 2));
+  console.log(`Wrote ${Object.keys(sorted).length} entries to ${outPath}`);
   process.exit(0);
 }
 

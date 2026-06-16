@@ -98,6 +98,14 @@ Arcane) are added as a **0-ducat placeholder** so every slot is still represente
    over time. Without Node installed, items already in the cache still resolve, and unknown
    items are added as 0-ducat placeholders with a hint in the status bar.
 
+   To pre-populate the **entire** cache up front (every tradable prime part) instead of
+   letting it warm over many scans, run the generator once after installing the Node deps:
+   ```
+   cd scripts && npm run generate
+   ```
+   This overwrites `data/ducat_lookup.json` with the full dataset, so afterward scans resolve
+   instantly and offline without per-item `@wfcd/items` lookups.
+
 ### Usage
 
 1. Open the trade window in Warframe with items in the slots.

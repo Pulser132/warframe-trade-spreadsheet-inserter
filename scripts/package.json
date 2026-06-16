@@ -1,6 +1,9 @@
 {
   "name": "wf-ducat-tools",
   "private": true,
+  "scripts": {
+    "generate": "node wf_ducat_lookup.js --generate"
+  },
   "dependencies": {
     "@wfcd/items": "latest"
   }
