@@ -45,10 +45,11 @@ class DucatCalculatorApp:
             self.root.after(0, self.scan_trade_window)
 
         try:
-            self._hotkey_listener = keyboard.GlobalHotKeys({hotkey: _on_trigger})
+            self._hotkey_listener = keyboard.GlobalHotKeys({hotkey.lower(): _on_trigger})
             self._hotkey_listener.start()
-        except Exception:
+        except Exception as e:
             self._hotkey_listener = None
+            self._set_status(f"OCR hotkey error: {e}")
 
     def _set_status(self, msg, duration_ms=4000):
         """Show a transient message in the status bar, auto-clearing after duration_ms."""
