@@ -18,19 +18,22 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
 
 
-def scan(lookup_path=None):
-    """Capture the screen, detect trade slots, OCR each, and return resolved items.
+def scan(lookup_path=None, image=None):
+    """Read item names from a trade screenshot and resolve them to ducat values.
 
-    Resolution is cache-aside: each OCR'd name is matched against the local cache
-    first (exact, then fuzzy); cache misses are batched into a single @wfcd/items
-    lookup and appended back to the cache for next time.
+    image may be None (grab the screen live), a path to an image file, or a PIL
+    Image — the file/Image forms enable offline testing against saved captures.
+
+    Resolution is cache-aside: each name is matched against the local cache first
+    (exact, then fuzzy); cache misses are batched into a single @wfcd/items lookup
+    and appended back to the cache for next time.
 
     Returns (results, skipped, resolver_unavailable) where:
       results: list of {"name": str, "ducats": int, "source": "cache"|"fetched"}
-      skipped: count of detected slots whose names could not be resolved
+      skipped: count of detected names that could not be resolved
       resolver_unavailable: True if there were misses but Node/@wfcd/items could
         not be reached (callers surface a 'run npm install' hint)
-    results is empty / skipped is 0 when no trade slots are found at all.
+    results is empty / skipped is 0 when no item names are found at all.
     Raises RuntimeError with a user-friendly message on any hard failure.
     """
     if lookup_path is None:
@@ -61,36 +64,33 @@ def scan(lookup_path=None):
             "https://github.com/UB-Mannheim/tesseract/wiki"
         )
 
+    _configure_tesseract(pytesseract)
+
     lookup = _load_lookup(lookup_path)
 
-    try:
-        screenshot = ImageGrab.grab()
-    except Exception as e:
-        raise RuntimeError(f"Screen capture failed:\n{e}")
+    if image is None:
+        try:
+            screenshot = ImageGrab.grab()
+        except Exception as e:
+            raise RuntimeError(f"Screen capture failed:\n{e}")
+    elif isinstance(image, str):
+        try:
+            screenshot = Image.open(image).convert("RGB")
+        except Exception as e:
+            raise RuntimeError(f"Failed to open image '{image}':\n{e}")
+    else:
+        screenshot = image.convert("RGB") if hasattr(image, "convert") else image
 
     img_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-    slot_crops = _detect_slots(img_bgr)
+    names = _extract_item_names(img_bgr, pytesseract)
 
-    if not slot_crops:
+    if not names:
         return [], 0, False
 
-    # OCR every detected slot first.
-    slot_texts = []
-    for crop_bgr in slot_crops[:6]:
-        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(crop_rgb)
-        # Upscale 2x for better OCR accuracy on small slot regions
-        pil_img = pil_img.resize(
-            (pil_img.width * 2, pil_img.height * 2), Image.LANCZOS
-        )
-        slot_texts.append(
-            pytesseract.image_to_string(pil_img, config="--psm 7").strip()
-        )
-
-    # Pass 1: resolve from the local cache (no Node).
-    entries = []   # per-slot dict, or None for an unresolved slot
-    misses = []    # (slot_index, normalized_query) for cache misses
-    for i, text in enumerate(slot_texts):
+    # Pass 1: resolve every detected name from the local cache (no Node).
+    entries = []   # per-item dict, or None for an unresolved name
+    misses = []    # (index, normalized_query) for cache misses
+    for i, text in enumerate(names):
         name, value = _resolve(text, lookup)
         if value is not None:
             entries.append({"name": name, "ducats": value, "source": "cache"})
@@ -123,56 +123,116 @@ def scan(lookup_path=None):
     return results, skipped, resolver_unavailable
 
 
-def _detect_slots(img_bgr):
-    """Return up to 6 BGR slot crops from the Warframe trade window.
+def _configure_tesseract(pytesseract):
+    """Point pytesseract at the Tesseract binary if it isn't already on PATH.
 
-    Detection strategy: threshold for the dark-grey trade UI background in HSV,
-    then find rectangular contours of roughly the right size for item slots.
-    Sort left-to-right, top-to-bottom and return the top 6.
+    The UB-Mannheim Windows installer commonly drops tesseract.exe under
+    %LOCALAPPDATA% or Program Files without adding it to PATH, so probe the usual
+    locations as a fallback.
+    """
+    import shutil
 
-    The HSV bounds and area thresholds below target a standard 1080p/1440p
-    Warframe UI. Tune _SLOT_HSV_LOWER/_UPPER if your UI scale differs.
+    if shutil.which("tesseract"):
+        return
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        os.path.join(local, "Programs", "Tesseract-OCR", "tesseract.exe") if local else "",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            return
+
+
+def _extract_item_names(img_bgr, pytesseract):
+    """Extract Warframe item-name strings from a trade screenshot.
+
+    The Trading Post UI prints each item's name as a small text label under its
+    icon. Strategy: OCR the image, treat every 'Prime' word as an anchor (all
+    Prime parts contain it; empty slots and UI chrome do not), then attach nearby
+    words to their nearest anchor to reassemble each (possibly two-line) name.
+    A second OCR pass over the tight band around the anchors sharpens the small
+    label text. Returns raw name strings; the caller normalizes and resolves them.
     """
     import cv2
     import numpy as np
-
-    _SLOT_HSV_LOWER = np.array([0, 0, 15])
-    _SLOT_HSV_UPPER = np.array([30, 50, 75])
+    from pytesseract import Output
 
     h, w = img_bgr.shape[:2]
-    total_px = w * h
+    scale = 2
+    gray = cv2.resize(
+        cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY),
+        (w * scale, h * scale),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    # Item labels are light text on a dark UI; Otsu makes them crisp for OCR.
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, _SLOT_HSV_LOWER, _SLOT_HSV_UPPER)
+    def words_of(region):
+        data = pytesseract.image_to_data(
+            region, config="--psm 11", output_type=Output.DICT
+        )
+        out = []
+        for i in range(len(data["text"])):
+            text = data["text"][i].strip()
+            try:
+                conf = float(data["conf"][i])
+            except (TypeError, ValueError):
+                conf = -1.0
+            if text and conf >= 45 and re.search(r"[A-Za-z]", text):
+                out.append({
+                    "t": text,
+                    "cx": data["left"][i] + data["width"][i] / 2,
+                    "cy": data["top"][i] + data["height"][i] / 2,
+                    "h": data["height"][i],
+                })
+        return out
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    def is_prime(word):
+        return word["t"].lower().strip(".,:!") == "prime"
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    anchors = [wd for wd in words_of(binary) if is_prime(wd)]
+    if not anchors:
+        return []
 
-    # Slots occupy roughly 0.3%–4% of the screen at typical resolutions
-    min_area = total_px * 0.003
-    max_area = total_px * 0.04
+    # Re-OCR a tight band around the anchors — small label text reads much more
+    # cleanly without the bright icons skewing the global threshold.
+    line_h = float(np.median([a["h"] for a in anchors]))
+    ys = [a["cy"] for a in anchors]
+    y0 = max(0, int(min(ys) - line_h * 2.5))
+    y1 = min(binary.shape[0], int(max(ys) + line_h * 2.5))
+    words = words_of(binary[y0:y1, :])
+    for wd in words:
+        wd["cy"] += y0
+    anchors = [wd for wd in words if is_prime(wd)] or anchors
+    line_h = float(np.median([a["h"] for a in anchors]))
 
-    candidates = []
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        area = cw * ch
-        if area < min_area or area > max_area:
+    # Attach each word to its nearest Prime anchor (horizontally), gated
+    # vertically so a name's wrapped second line is captured but the header/footer
+    # sharing the same column is not.
+    anchor_ids = {id(a) for a in anchors}
+    groups = {id(a): [a] for a in anchors}
+    for wd in words:
+        if id(wd) in anchor_ids:
             continue
-        aspect = cw / ch if ch > 0 else 0
-        # Slots are roughly square (0.6–1.8 aspect ratio)
-        if 0.6 <= aspect <= 1.8:
-            candidates.append((x, y, cw, ch))
+        candidates = [a for a in anchors if abs(wd["cy"] - a["cy"]) <= line_h * 2.6]
+        if not candidates:
+            continue
+        nearest = min(candidates, key=lambda a: abs(wd["cx"] - a["cx"]))
+        if abs(wd["cx"] - nearest["cx"]) <= line_h * 8:
+            groups[id(nearest)].append(wd)
 
-    # Sort top-to-bottom then left-to-right (group by row within ~50px tolerance)
-    candidates.sort(key=lambda r: (r[1] // 50, r[0]))
-
-    crops = []
-    for (x, y, cw, ch) in candidates[:6]:
-        crops.append(img_bgr[y: y + ch, x: x + cw])
-
-    return crops
+    names = []
+    for a in anchors:
+        grp = sorted(
+            groups[id(a)],
+            key=lambda wd: (round(wd["cy"] / (line_h * 0.9)), wd["cx"]),
+        )
+        names.append((a["cx"], " ".join(wd["t"] for wd in grp)))
+    names.sort()  # left-to-right
+    return [name for _, name in names]
 
 
 def _load_lookup(path):
