@@ -67,9 +67,12 @@ The `configs/` directory is gitignored, so your credentials are never committed.
 ## OCR Trade Scanner (optional)
 
 Press a configurable global hotkey while the in-game trade window is open. The app captures
-the screen, reads each item's on-screen name label via OCR, resolves the name to a ducat
-value, and fills the current trade (up to the 6-item limit). The Current Trade totals and
-platinum value update through the app's normal display logic — no manual button clicking.
+the screen, locates the six **receiving** slots (the bottom panel — the other trader's
+offer), reads each item's on-screen name label via OCR, resolves the name to a ducat value,
+and fills the current trade (up to the 6-item limit). The Current Trade totals and platinum
+value update through the app's normal display logic — no manual button clicking. Slots whose
+name can't be resolved to a ducat value (an unreadable label, or a non-ducat item such as an
+Arcane) are added as a **0-ducat placeholder** so every slot is still represented.
 
 ### Setup
 
@@ -93,7 +96,7 @@ platinum value update through the app's normal display logic — no manual butto
    This requires [Node.js](https://nodejs.org/). The cache is self-warming: each newly
    resolved item is appended to `data/ducat_lookup.json`, so `@wfcd/items` is consulted less
    over time. Without Node installed, items already in the cache still resolve, and unknown
-   items are simply skipped with a hint in the status bar.
+   items are added as 0-ducat placeholders with a hint in the status bar.
 
 ### Usage
 
@@ -101,7 +104,8 @@ platinum value update through the app's normal display logic — no manual butto
 2. Press the OCR hotkey (default **`<F8>`**).
 3. The detected items are added to the current trade, and the status bar reports the
    result — how many items were added, how many were newly fetched from `@wfcd/items`, and
-   how many could not be resolved.
+   how many were added as 0-ducat placeholders. The summary stays in the status bar until you
+   clear the trade (Reset, Log Trade, or undoing back to empty).
 
 The hotkey is configurable in the **Settings** dialog ("OCR Hotkey"), or directly in
 `configs/config.json` via the `"ocr_hotkey"` field. Use angle-bracket syntax, e.g. `<F8>` or
@@ -122,17 +126,18 @@ aren't available.
 OCR is best-effort — item names are read from the small on-screen text labels, and not every
 read is perfect:
 
-- **Long names that wrap onto a second line** (e.g. *Equinox Prime Chassis Blueprint*) may be
-  misread or skipped, because their smaller, condensed glyphs are harder for OCR. The app
-  fuzzy-matches names to absorb minor misreads, but not all of them.
+- **Long names that wrap onto a second line** (e.g. *Equinox Prime Chassis Blueprint*) have
+  smaller, condensed glyphs that are harder for OCR. These are usually handled now — each slot
+  is read in isolation and names are resolved by token, absorbing a misread word like
+  *Prime* → *Print* — but a badly garbled label can still slip through.
 - **This is a resolution/OCR issue, not a text-color issue.** Changing the in-game item-name
   text color does **not** help — measured label contrast is already good (the items that fail
   often have *higher* contrast than ones that succeed), and a lower-contrast color makes
   things worse. What actually helps: capture at your native resolution, keep the trade window
   fully visible and unobstructed, and use a **larger UI / interface scale** so the text is
   physically bigger.
-- **Unresolved items are skipped** (and noted in the status bar). Just add them manually with
-  the ducat-value buttons.
+- **Unresolved items become 0-ducat placeholders** (and are noted in the status bar). If one
+  should carry a ducat value, undo it and add it manually with the ducat-value buttons.
 
 ### Safety
 

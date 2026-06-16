@@ -28,13 +28,19 @@ def scan(lookup_path=None, image=None):
     (exact, then fuzzy); cache misses are batched into a single @wfcd/items lookup
     and appended back to the cache for next time.
 
+    Each detected (filled) trade slot yields one ordered, left-to-right entry in
+    results. Slots whose name can't be resolved to a ducat value (OCR garbage, or
+    real but non-ducat items like Arcanes/Forma) become a 0-ducat placeholder so
+    the caller can still represent every slot.
+
     Returns (results, skipped, resolver_unavailable, unresolved) where:
-      results: list of {"name": str, "ducats": int, "source": "cache"|"fetched"}
-      skipped: count of detected names that could not be resolved
+      results: list of {"name": str, "ducats": int,
+                        "source": "cache"|"fetched"|"unresolved"}, one per slot
+      skipped: count of 0-ducat placeholder entries (unresolved slots)
       resolver_unavailable: True if there were misses but Node/@wfcd/items could
         not be reached (callers surface a 'run npm install' hint)
-      unresolved: list of {"assembled": str, "normalized": str} for each item
-        that could not be resolved; empty list if all items resolved
+      unresolved: list of {"assembled": str, "normalized": str} for each slot
+        that could not be resolved; empty list if all slots resolved
     results is empty / skipped is 0 when no item names are found at all.
     Raises RuntimeError with a user-friendly message on any hard failure.
     """
@@ -90,7 +96,7 @@ def scan(lookup_path=None, image=None):
         return [], 0, False, []
 
     # Pass 1: resolve every detected name from the local cache (no Node).
-    entries = []   # per-item dict, or None for an unresolved name
+    entries = []   # per-slot dict, or None for an unresolved name
     misses = []    # (index, normalized_query) for cache misses
     for i, text in enumerate(names):
         name, value = _resolve(text, lookup)
@@ -120,14 +126,21 @@ def scan(lookup_path=None, image=None):
         if new_entries:
             _append_cache(lookup_path, new_entries)
 
-    unresolved = [
-        {"assembled": names[i], "normalized": _normalize(names[i])}
-        for i, e in enumerate(entries)
-        if e is None
-    ]
-    results = [e for e in entries if e is not None]
+    # Each detected slot is a real item, so an unresolved slot becomes a 0-ducat
+    # placeholder (kept in left-to-right slot order alongside resolved entries).
+    unresolved = []
+    for i, e in enumerate(entries):
+        if e is None:
+            norm = _normalize(names[i])
+            entries[i] = {
+                "name": norm or names[i].strip(),
+                "ducats": 0,
+                "source": "unresolved",
+            }
+            unresolved.append({"assembled": names[i], "normalized": norm})
+
     skipped = len(unresolved)
-    return results, skipped, resolver_unavailable, unresolved
+    return entries, skipped, resolver_unavailable, unresolved
 
 
 def _configure_tesseract(pytesseract):
@@ -153,93 +166,121 @@ def _configure_tesseract(pytesseract):
             return
 
 
-def _extract_item_names(img_bgr, pytesseract):
-    """Extract Warframe item-name strings from a trade screenshot.
+# Footer/chrome words that can bleed into the label band; never part of an item
+# name, so they're dropped during cleanup.
+_FOOTER_WORDS = {"not", "ready", "to", "trade", "add", "items"}
 
-    The Trading Post UI prints each item's name as a small text label under its
-    icon. Strategy: OCR the image, treat every 'Prime' word as an anchor (all
-    Prime parts contain it; empty slots and UI chrome do not), then attach nearby
-    words to their nearest anchor to reassemble each (possibly two-line) name.
-    A second OCR pass over the tight band around the anchors sharpens the small
-    label text. Returns raw name strings; the caller normalizes and resolves them.
+
+def _extract_item_names(img_bgr, pytesseract):
+    """Extract the receiving-slot item names from a trade screenshot.
+
+    The Trading Post shows the partner's offered (received) items as a row of up
+    to six slots in the bottom panel, each with a one- or two-line name label
+    beneath its icon. Strategy: locate the six slot columns geometrically, then
+    OCR each name label in isolation with a threshold computed on just that crop.
+    Per-crop thresholding is the key over a global pass — the bright item icons
+    otherwise skew the threshold and bury the small label text. Returns cleaned,
+    left-to-right name strings for the filled slots only; the caller normalizes
+    and resolves them.
     """
     import cv2
     import numpy as np
-    from pytesseract import Output
 
     h, w = img_bgr.shape[:2]
-    scale = 2
-    gray = cv2.resize(
-        cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY),
-        (w * scale, h * scale),
-        interpolation=cv2.INTER_CUBIC,
-    )
-    # Item labels are light text on a dark UI; Otsu makes them crisp for OCR.
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    def words_of(region):
-        data = pytesseract.image_to_data(
-            region, config="--psm 11", output_type=Output.DICT
-        )
-        out = []
-        for i in range(len(data["text"])):
-            text = data["text"][i].strip()
-            try:
-                conf = float(data["conf"][i])
-            except (TypeError, ValueError):
-                conf = -1.0
-            if text and conf >= 45 and re.search(r"[A-Za-z]", text):
-                out.append({
-                    "t": text,
-                    "cx": data["left"][i] + data["width"][i] / 2,
-                    "cy": data["top"][i] + data["height"][i] / 2,
-                    "h": data["height"][i],
-                })
-        return out
-
-    def is_prime(word):
-        return word["t"].lower().strip(".,:!") == "prime"
-
-    anchors = [wd for wd in words_of(binary) if is_prime(wd)]
-    if not anchors:
-        return []
-
-    # Re-OCR a tight band around the anchors — small label text reads much more
-    # cleanly without the bright icons skewing the global threshold.
-    line_h = float(np.median([a["h"] for a in anchors]))
-    ys = [a["cy"] for a in anchors]
-    y0 = max(0, int(min(ys) - line_h * 2.5))
-    y1 = min(binary.shape[0], int(max(ys) + line_h * 2.5))
-    words = words_of(binary[y0:y1, :])
-    for wd in words:
-        wd["cy"] += y0
-    anchors = [wd for wd in words if is_prime(wd)] or anchors
-    line_h = float(np.median([a["h"] for a in anchors]))
-
-    # Attach each word to its nearest Prime anchor (horizontally), gated
-    # vertically so a name's wrapped second line is captured but the header/footer
-    # sharing the same column is not.
-    anchor_ids = {id(a) for a in anchors}
-    groups = {id(a): [a] for a in anchors}
-    for wd in words:
-        if id(wd) in anchor_ids:
-            continue
-        candidates = [a for a in anchors if abs(wd["cy"] - a["cy"]) <= line_h * 2.6]
-        if not candidates:
-            continue
-        nearest = min(candidates, key=lambda a: abs(wd["cx"] - a["cx"]))
-        if abs(wd["cx"] - nearest["cx"]) <= line_h * 8:
-            groups[id(nearest)].append(wd)
+    centers = _slot_centers(gray, w, h)
+    colw = (centers[1] - centers[0]) * 0.98
+    # Receive-panel label band as a fixed proportion of the window. The Trading
+    # Post is a constant-layout menu, so this both reads the labels and keeps us
+    # on the bottom (received) row rather than the player's own offer up top.
+    ly0, ly1 = int(h * 0.773), int(h * 0.847)
 
     names = []
-    for a in anchors:
-        grp = sorted(
-            groups[id(a)],
-            key=lambda wd: (round(wd["cy"] / (line_h * 0.9)), wd["cx"]),
+    for c in centers:
+        x0 = max(0, int(c - colw / 2))
+        x1 = min(w, int(c + colw / 2))
+        crop = gray[ly0:ly1, x0:x1]
+        if crop.size == 0:
+            continue
+        crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        # A touch of blur smooths the upscaled aliasing; without it some
+        # low-contrast labels (dark warframe silhouettes) threshold to nothing.
+        crop = cv2.GaussianBlur(crop, (0, 0), 1)
+        _, binary = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if np.mean(binary) < 127:
+            binary = cv2.bitwise_not(binary)  # Tesseract wants dark text on light
+        binary = cv2.copyMakeBorder(
+            binary, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255
         )
-        names.append((a["cx"], " ".join(wd["t"] for wd in grp)))
+        text = _clean_label(pytesseract.image_to_string(binary, config="--psm 6"))
+        if text:
+            names.append((c, text))
     names.sort()  # left-to-right
     return [name for _, name in names]
+
+
+def _slot_centers(gray, w, h):
+    """Return six evenly-spaced x-centers for the bottom-panel trade slots.
+
+    Detects the slot-icon cells via edge contours in the lower half and fits a
+    regular 6-column grid to their centers (robust to a few missing/spurious
+    cells). Falls back to fixed proportions of the window width when detection is
+    too weak — the Trading Post is a constant-layout menu, so the proportional
+    grid (centers spanning ~0.184W…0.816W) is a reliable backstop.
+    """
+    import cv2
+    import numpy as np
+
+    base = [w * (0.184 + (0.816 - 0.184) * i / 5) for i in range(6)]
+    step = base[1] - base[0]
+
+    ry0, ry1 = int(h * 0.55), int(h * 0.80)
+    sub = gray[ry0:ry1, :]
+    edges = cv2.dilate(
+        cv2.Canny(sub, 30, 90), np.ones((3, 3), np.uint8), iterations=2
+    )
+    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detected = []
+    for cnt in cnts:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if w * 0.06 < bw < w * 0.18 and bh > (ry1 - ry0) * 0.4:
+            detected.append(x + bw / 2.0)
+    if len(detected) < 4:
+        return base
+
+    # Snap each detected center to its nearest baseline column, then least-squares
+    # fit center = slope*index + intercept over those inliers to refine the grid.
+    idx, cen = [], []
+    for d in detected:
+        i = min(range(6), key=lambda k: abs(base[k] - d))
+        if abs(base[i] - d) <= step * 0.4:  # drop spurious boxes
+            idx.append(i)
+            cen.append(d)
+    if len(set(idx)) < 4:
+        return base
+    A = np.vstack([idx, np.ones(len(idx))]).T
+    slope, intercept = np.linalg.lstsq(A, np.array(cen), rcond=None)[0]
+    if not (step * 0.6 <= slope <= step * 1.4):  # sanity-check the fitted spacing
+        return base
+    return [intercept + slope * i for i in range(6)]
+
+
+def _clean_label(raw):
+    """Reduce a raw per-slot OCR string to a clean item-name candidate.
+
+    Drops footer words that can bleed in, junk tokens (single stray characters or
+    pure punctuation/digits), and collapses whitespace. Returns '' when nothing
+    meaningful remains — an empty slot has no readable label, so it's skipped.
+    """
+    tokens = []
+    for tok in raw.lower().split():
+        letters = re.sub(r"[^a-z]", "", tok)
+        if len(letters) >= 2 and letters not in _FOOTER_WORDS:
+            tokens.append(letters)
+    if not any(len(t) >= 3 for t in tokens):
+        return ""
+    return " ".join(tokens)
 
 
 def _load_lookup(path):

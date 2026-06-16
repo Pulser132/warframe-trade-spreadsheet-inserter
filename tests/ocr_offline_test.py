@@ -29,6 +29,8 @@ IMAGES_DIR = os.path.join(_BASE_DIR, "OCR Test Images")
 # Known items in each screenshot, by resolved canonical (normalized) name.
 # Resolved names are stable (the resolver returns the @wfcd/items canonical form),
 # even though the raw OCR text varies — so assert on these, not on OCR output.
+# `expected` lists the ducat-bearing items; `placeholders` is the count of slots
+# that resolve to a 0-ducat placeholder (non-ducat items like Arcanes).
 EXPECTATIONS = {
     "chrome_3IXJzCdSqV.jpg": {
         "expected": {
@@ -37,10 +39,34 @@ EXPECTATIONS = {
             "alternox prime barrel",
             "braton prime receiver",
             "knell prime receiver",
-            # "equinox prime chassis blueprint" is intentionally omitted: its
-            # label is not legibly OCR-able in this compressed capture.
+            "equinox prime chassis",
         },
+        "min_resolved": 6,
+        "placeholders": 0,
+    },
+    "NVIDIA_Overlay_nvw3kfUOUH.jpg": {
+        "expected": {
+            "akbolto prime blueprint",
+            "akstiletto prime link",
+            "akvasto prime blueprint",
+            "alternox prime barrel",
+            "akarius prime blueprint",
+            "caliban prime neuroptics",
+        },
+        "min_resolved": 6,
+        "placeholders": 0,
+    },
+    "NVIDIA_Overlay_TrGsLr6FWF.jpg": {
+        "expected": {
+            "wisp prime systems",
+            "hydroid prime blueprint",
+            "euphona prime barrel",
+            "cedo prime receiver",
+            "chroma prime chassis",
+        },
+        # Arcane Acceleration has no ducat value, so it lands as a 0-placeholder.
         "min_resolved": 5,
+        "placeholders": 1,
     },
 }
 
@@ -85,12 +111,14 @@ def main():
             if os.path.exists(tmp_cache):
                 os.remove(tmp_cache)
 
-        resolved_names = sorted(r["name"] for r in results)
+        resolved = [r for r in results if r["ducats"] > 0]
+        placeholders = [r for r in results if r["ducats"] == 0]
         print(f"\n=== {fname} ===")
-        print(f"  resolved {len(results)}, skipped {skipped}, "
+        print(f"  slots {len(results)} (resolved {len(resolved)}, "
+              f"placeholders {len(placeholders)}), skipped {skipped}, "
               f"resolver_unavailable={resolver_unavailable}")
         for r in results:
-            print(f"    [{r['source']:7}] {r['name']} -> {r['ducats']} ducats")
+            print(f"    [{r['source']:10}] {r['name']} -> {r['ducats']} ducats")
         for u in unresolved:
             print(f"    [UNRESOLVED] assembled={u['assembled']!r}  normalized={u['normalized']!r}")
 
@@ -99,21 +127,25 @@ def main():
             print("  (no expectations defined — informational only)")
             continue
 
-        if resolver_unavailable and not results:
+        if resolver_unavailable and not resolved:
             _skip(f"{fname}: @wfcd/items resolver unavailable "
                   "(cd scripts && npm install) — cannot validate")
 
-        resolved_set = set(resolved_names)
+        resolved_set = {r["name"] for r in resolved}
         missing = exp["expected"] - resolved_set
-        if len(results) < exp["min_resolved"]:
+        if len(resolved) < exp["min_resolved"]:
             failures.append(
-                f"{fname}: resolved {len(results)} < expected min {exp['min_resolved']}"
+                f"{fname}: resolved {len(resolved)} < expected min {exp['min_resolved']}"
             )
         if missing:
             failures.append(f"{fname}: missing expected items {sorted(missing)}")
+        if len(placeholders) != exp["placeholders"]:
+            failures.append(
+                f"{fname}: {len(placeholders)} placeholders, expected {exp['placeholders']}"
+            )
 
-        # All resolved values must be valid ducat tiers.
-        bad = [r for r in results if r["ducats"] not in (15, 25, 45, 65, 100)]
+        # Resolved values must be valid ducat tiers; placeholders are exactly 0.
+        bad = [r for r in resolved if r["ducats"] not in (15, 25, 45, 65, 100)]
         if bad:
             failures.append(f"{fname}: non-tier ducat values {bad}")
 

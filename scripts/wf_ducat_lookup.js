@@ -58,7 +58,68 @@ function ratio(a, b) {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
-// Hybrid resolve: exact normalized match, then substring, then fuzzy >= 0.85.
+// Similarity of two tokens. Beyond edit-distance, treat one token containing the
+// other as a strong match so a merged OCR token (e.g. "chromapnrrt" for
+// "chroma" + "prime") still anchors on its embedded name.
+function tokenSim(a, b) {
+  const r = ratio(a, b);
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length >= 4 && long.includes(short)) return Math.max(r, 0.9);
+  return r;
+}
+
+// Best per-token similarity of `token` against any token in `pool`.
+function bestTokenRatio(token, pool) {
+  let best = 0;
+  for (const p of pool) {
+    const r = tokenSim(token, p);
+    if (r > best) best = r;
+  }
+  return best;
+}
+
+// Token-overlap fallback for labels with a mid-word OCR misread (e.g. the small
+// first line of two-line warframe-component labels reads "Print"/"Prnmie" for
+// "Prime"). Anchors on the distinctive leading name token, then scores each
+// candidate by how well its tokens align with the query's. The in-game label
+// appends "Blueprint" to component names that @wfcd stores without it, so a
+// trailing "blueprint" on a 4+ token query is dropped before matching.
+function resolveByTokens(q, index) {
+  // The game appends "Blueprint" to component names (Chassis/Neuroptics/Systems)
+  // that @wfcd stores without it. Drop a trailing "blueprint" when it follows a
+  // component word (anything but "prime") so it doesn't tie with the warframe's
+  // main "<name> prime blueprint". A genuine main BP ends "...prime blueprint",
+  // so it's kept.
+  let qToks = q.split(" ").filter(Boolean);
+  const n = qToks.length;
+  if (n >= 3 && qToks[n - 1] === "blueprint" && qToks[n - 2] !== "prime") {
+    qToks = qToks.slice(0, -1);
+  }
+  // "prime" is in every candidate, so it's non-discriminative — score on the
+  // name + component tokens, which is also why a misread "prime" doesn't matter.
+  const discriminative = (toks) => toks.filter((t) => t !== "prime");
+  qToks = discriminative(qToks);
+  if (qToks.length === 0) return null;
+
+  let best = null;
+  let bestScore = 0;
+  for (const it of index) {
+    const cToks = discriminative(it.norm.split(" ").filter(Boolean));
+    if (cToks.length === 0) continue;
+    if (bestTokenRatio(cToks[0], qToks) < 0.85) continue; // leading name token
+    let sum = 0;
+    for (const ct of cToks) sum += bestTokenRatio(ct, qToks);
+    const score = sum / cToks.length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = it;
+    }
+  }
+  return best && bestScore >= 0.8 ? best : null;
+}
+
+// Hybrid resolve: exact normalized match, substring, whole-string fuzzy >= 0.85,
+// then a token-overlap fallback for mid-word misreads on multi-word labels.
 function resolveOne(query, index) {
   const q = normalize(query);
   if (!q) return null;
@@ -86,7 +147,9 @@ function resolveOne(query, index) {
       best = it;
     }
   }
-  return best && bestScore >= 0.85 ? best : null;
+  if (best && bestScore >= 0.85) return best;
+
+  return resolveByTokens(q, index);
 }
 
 if (args[0] === "--resolve-json") {

@@ -74,46 +74,42 @@ class DucatCalculatorApp:
             messagebox.showerror("OCR Scan Error", str(e))
             return
 
-        if not results and skipped == 0:
+        if not results:
             self._set_status("OCR: no trade slots detected.")
             return
 
+        # Every detected slot is added, including 0-ducat placeholders for items
+        # that couldn't be resolved (OCR garbage or non-ducat items like Arcanes).
         added_items = []
         for item in results:
-            v = item["ducats"]
-            if v in self.price_map and len(self.history) < TRADE_ITEM_LIMIT:
-                self.add_item(v)
-                added_items.append(item)
+            if len(self.history) >= TRADE_ITEM_LIMIT:
+                break
+            self.add_item(item["ducats"])
+            added_items.append(item)
 
-        if skipped and resolver_unavailable:
-            unresolved_note = f"{skipped} unresolved — run: npm install in scripts/"
-        elif skipped:
-            unresolved_note = f"{skipped} unresolved"
-        else:
-            unresolved_note = ""
-
-        if added_items:
-            names = ", ".join(
-                f"{item['name'].title()} ({item['ducats']})" for item in added_items
-            )
-            new_count = sum(1 for item in added_items if item.get("source") == "fetched")
-            notes = []
-            if new_count:
-                notes.append(f"{new_count} new from @wfcd/items")
-            if unresolved_note:
-                notes.append(unresolved_note)
-            count = len(added_items)
-            msg = f"OCR: added {count} item{'s' if count != 1 else ''} — {names}"
-            if notes:
-                msg += " (" + "; ".join(notes) + ")"
-            self._set_status(msg, duration_ms=6000)
-        elif not results:
-            msg = f"OCR: {skipped} slot{'s' if skipped != 1 else ''} detected but no items could be resolved."
+        names = ", ".join(
+            f"{item['name'].title()} ({item['ducats']})" for item in added_items
+        )
+        notes = []
+        new_count = sum(1 for item in added_items if item.get("source") == "fetched")
+        if new_count:
+            notes.append(f"{new_count} new from @wfcd/items")
+        placeholder_count = sum(
+            1 for item in added_items if item.get("source") == "unresolved"
+        )
+        if placeholder_count:
+            plural = "s" if placeholder_count != 1 else ""
+            note = f"{placeholder_count} non-ducat placeholder{plural} @ 0"
             if resolver_unavailable:
-                msg += " — run: npm install in scripts/"
-            self._set_status(msg)
-        else:
-            self._set_status("OCR: no recognizable prime items detected.")
+                note += " — run: npm install in scripts/"
+            notes.append(note)
+
+        count = len(added_items)
+        msg = f"OCR: added {count} item{'s' if count != 1 else ''} — {names}"
+        if notes:
+            msg += " (" + "; ".join(notes) + ")"
+        # Persistent: the summary stays until the trade is cleared (Reset/Log/Undo).
+        self._set_status(msg, duration_ms=0)
 
     def _on_close(self):
         if self._status_after_id:
@@ -202,16 +198,19 @@ class DucatCalculatorApp:
         if self.history:
             self.history.pop()
             self.refresh_display()
+            if not self.history:
+                self._set_status("")  # trade emptied — drop the OCR summary
 
     def reset_trade(self):
         self.history.clear()
         self.refresh_display()
+        self._set_status("")  # clear any persistent OCR summary
 
     def log_trade(self):
         if not self.history:
             return
         total_ducats = sum(self.history)
-        total_platinum = sum(self.price_map[d] for d in self.history)
+        total_platinum = sum(self.price_map.get(d, 0) for d in self.history)
         append_trade(total_ducats, total_platinum)
         self.reset_trade()
         self.refresh_lifetime_totals()
@@ -287,7 +286,7 @@ class DucatCalculatorApp:
     def refresh_display(self):
         item_count = len(self.history)
         total_ducats = sum(self.history)
-        total_platinum = sum(self.price_map[d] for d in self.history)
+        total_platinum = sum(self.price_map.get(d, 0) for d in self.history)
 
         self.items_label.config(text=f"Items: {item_count} / {TRADE_ITEM_LIMIT}")
         self.ducats_label.config(text=f"Total Ducats: {total_ducats}")
