@@ -9,10 +9,11 @@ A small desktop app for tracking Warframe Prime Junk trades. Click ducat-value b
 - **Lifetime Totals panel** — cumulative ducats and platinum across all logged trades, plus average ducats per platinum (rounded to the nearest tenth)
 - **Log Trade** — appends the current trade's totals and a timestamp to `data/trades.json`, then resets the trade
 - **Reset Trade Total** — clears all records in `trades.json` behind a confirmation dialog
-- **Export to Spreadsheet** — appends all not-yet-exported trades to a configured Google Sheet (optional; requires setup)
+- **Export to Spreadsheet** — appends all not-yet-exported trades to a configured Google Sheet (optional; requires setup); the button label shows the pending count, e.g. `Export to Spreadsheet (3)`
 - **OCR Trade Scanner** — press a global hotkey to read the in-game trade window via screen OCR and auto-fill the current trade with the detected items' ducat values (optional; requires setup — see section below)
 - **Copy WTB Message** — copies a formatted "WTB Prime Junk" message to the clipboard
 - **Settings** — configure the platinum price for each ducat tier and the OCR hotkey; values are persisted to `configs/config.json`
+- **Keyboard shortcuts** — `Ctrl+Z` to undo the last item, `Enter` to log the current trade
 
 ## Requirements
 

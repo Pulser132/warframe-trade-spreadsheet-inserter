@@ -28,6 +28,8 @@ class DucatCalculatorApp:
         self.refresh_display()
         self.refresh_lifetime_totals()
         self._setup_ocr_hotkey()
+        self.root.bind("<Control-z>", lambda e: self.undo_item())
+        self.root.bind("<Return>", lambda e: self.log_trade())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _setup_ocr_hotkey(self):
@@ -179,7 +181,8 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=3, padx=4)
         ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=4, padx=4)
         ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
-        ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet).grid(row=0, column=6, padx=4)
+        self.export_button = ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet)
+        self.export_button.grid(row=0, column=6, padx=4)
 
         self._status_label = ttk.Label(
             container, text="", anchor="w", font=("Segoe UI", 9), foreground="grey"
@@ -225,6 +228,14 @@ class DucatCalculatorApp:
         self.lifetime_ducats_label.config(text=f"Total Ducats: {total_ducats}")
         self.lifetime_platinum_label.config(text=f"Total Platinum: {total_platinum}")
         self.lifetime_avg_label.config(text=f"Avg Ducats / Plat: {avg}")
+        self._update_export_button()
+
+    def _update_export_button(self):
+        pending_count = sum(1 for t in load_trades() if not t.get("exported", False))
+        text = "Export to Spreadsheet"
+        if pending_count:
+            text += f" ({pending_count})"
+        self.export_button.config(text=text)
 
     def reset_trade_total(self):
         confirmed = messagebox.askyesno(
@@ -262,6 +273,7 @@ class DucatCalculatorApp:
             if t["timestamp"] in exported_timestamps:
                 t["exported"] = True
         save_trades(trades)
+        self._update_export_button()
 
         messagebox.showinfo(
             "Export to Spreadsheet",
