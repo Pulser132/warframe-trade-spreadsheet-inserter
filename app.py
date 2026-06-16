@@ -67,7 +67,7 @@ class DucatCalculatorApp:
 
         try:
             import ocr_scanner
-            results, skipped, resolver_unavailable = ocr_scanner.scan()
+            results, skipped, resolver_unavailable, _ = ocr_scanner.scan()
         except RuntimeError as e:
             self._set_status("")
             messagebox.showerror("OCR Scan Error", str(e))

@@ -28,11 +28,13 @@ def scan(lookup_path=None, image=None):
     (exact, then fuzzy); cache misses are batched into a single @wfcd/items lookup
     and appended back to the cache for next time.
 
-    Returns (results, skipped, resolver_unavailable) where:
+    Returns (results, skipped, resolver_unavailable, unresolved) where:
       results: list of {"name": str, "ducats": int, "source": "cache"|"fetched"}
       skipped: count of detected names that could not be resolved
       resolver_unavailable: True if there were misses but Node/@wfcd/items could
         not be reached (callers surface a 'run npm install' hint)
+      unresolved: list of {"assembled": str, "normalized": str} for each item
+        that could not be resolved; empty list if all items resolved
     results is empty / skipped is 0 when no item names are found at all.
     Raises RuntimeError with a user-friendly message on any hard failure.
     """
@@ -85,7 +87,7 @@ def scan(lookup_path=None, image=None):
     names = _extract_item_names(img_bgr, pytesseract)
 
     if not names:
-        return [], 0, False
+        return [], 0, False, []
 
     # Pass 1: resolve every detected name from the local cache (no Node).
     entries = []   # per-item dict, or None for an unresolved name
@@ -118,9 +120,14 @@ def scan(lookup_path=None, image=None):
         if new_entries:
             _append_cache(lookup_path, new_entries)
 
+    unresolved = [
+        {"assembled": names[i], "normalized": _normalize(names[i])}
+        for i, e in enumerate(entries)
+        if e is None
+    ]
     results = [e for e in entries if e is not None]
-    skipped = sum(1 for e in entries if e is None)
-    return results, skipped, resolver_unavailable
+    skipped = len(unresolved)
+    return results, skipped, resolver_unavailable, unresolved
 
 
 def _configure_tesseract(pytesseract):

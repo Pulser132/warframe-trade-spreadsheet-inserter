@@ -75,7 +75,7 @@ def main():
             os.remove(tmp_cache)
 
         try:
-            results, skipped, resolver_unavailable = ocr_scanner.scan(
+            results, skipped, resolver_unavailable, unresolved = ocr_scanner.scan(
                 lookup_path=tmp_cache, image=path
             )
         except RuntimeError as e:
@@ -91,6 +91,8 @@ def main():
               f"resolver_unavailable={resolver_unavailable}")
         for r in results:
             print(f"    [{r['source']:7}] {r['name']} -> {r['ducats']} ducats")
+        for u in unresolved:
+            print(f"    [UNRESOLVED] assembled={u['assembled']!r}  normalized={u['normalized']!r}")
 
         exp = EXPECTATIONS.get(fname)
         if not exp:
