@@ -316,18 +316,46 @@ def _resolve(ocr_text, lookup):
     if not ocr_text:
         return None, None
     norm = _normalize(ocr_text)
-    if norm in lookup:
-        return norm, lookup[norm]
+    # When the text reads as a component label with a trailing "Blueprint" (the
+    # game appends it; @wfcd/items and this cache store components without it —
+    # see _strip_component_blueprint), match on the stripped form only and don't
+    # fall back to the untouched text. Falling back would let it fuzzy-collide
+    # with an unrelated "<name> prime blueprint" cache entry that happens to
+    # share a leading token (e.g. "chroma prime chassis blueprint" — or a merged-
+    # token OCR read like "chromaprnt chassis blueprint" — against the cached
+    # "chroma prime blueprint"); better to miss here and let the Node resolver
+    # (Pass 2) resolve it correctly than to silently mismatch.
+    query = _strip_component_blueprint(norm)
+    if query in lookup:
+        return query, lookup[query]
     # Fuzzy fallback using stdlib difflib (cutoff=0.75 to avoid false positives).
     # The whole-string ratio over-weights the shared "<prime> <component>" suffix
     # (e.g. "akbolto prime blueprint" scores 0.86 against "zakti prime blueprint"),
     # so anchor on the distinctive leading name token before accepting a match.
     # @wfcd names are "<item-name> prime <component>", so a differing first token
     # means a different item — defer those to the robust Node resolver in Pass 2.
-    matches = difflib.get_close_matches(norm, lookup.keys(), n=1, cutoff=0.75)
-    if matches and _leading_token_sim(norm, matches[0]) >= 0.7:
+    matches = difflib.get_close_matches(query, lookup.keys(), n=1, cutoff=0.75)
+    if matches and _leading_token_sim(query, matches[0]) >= 0.7:
         return matches[0], lookup[matches[0]]
     return None, None
+
+
+def _strip_component_blueprint(norm):
+    """Drop a trailing "blueprint" the game appends to component labels.
+
+    @wfcd/items (and this cache) store component names like "chroma prime
+    chassis" without the trailing "Blueprint" the in-game label shows — only a
+    warframe/weapon's own main blueprint keeps it (e.g. "hydroid prime
+    blueprint"). Without this, a correctly-read component label never hits the
+    cache's exact-match entry and falls into the fuzzy fallback below, where it
+    can lose to a shorter, wrong "<name> prime blueprint" entry that shares the
+    same leading token. Mirrors the same rule in wf_ducat_lookup.js's
+    resolveByTokens.
+    """
+    tokens = norm.split(" ")
+    if len(tokens) >= 3 and tokens[-1] == "blueprint" and tokens[-2] != "prime":
+        return " ".join(tokens[:-1])
+    return norm
 
 
 def _leading_token_sim(query, candidate):

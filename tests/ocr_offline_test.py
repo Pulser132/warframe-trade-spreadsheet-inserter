@@ -97,16 +97,21 @@ def main():
     for fname in images:
         path = os.path.join(IMAGES_DIR, fname)
         # Throwaway cache so the real data/ducat_lookup.json isn't modified.
-        # Seed it with a colliding decoy: "zakti prime blueprint" shares the
-        # "<prime> <component>" suffix with many items, so the Python cache-side
-        # fuzzy step (ocr_scanner._resolve) used to mis-match correctly-read names
-        # like "akbolto prime blueprint"/"hydroid prime blueprint" to it (issue
-        # #10). Seeding reproduces the populated-cache condition of the live OCR
-        # hotkey path — an empty cache would bypass _resolve entirely and hide the
-        # regression. Items must still resolve to their true names, not Zakti.
+        # Seed it with colliding decoys that reproduce real cache-collision bugs:
+        # - "zakti prime blueprint" shares the "<prime> <component>" suffix with
+        #   many items, so the Python cache-side fuzzy step (ocr_scanner._resolve)
+        #   used to mis-match correctly-read names like "akbolto prime
+        #   blueprint"/"hydroid prime blueprint" to it (issue #10).
+        # - "chroma prime blueprint" collides with the component name "chroma
+        #   prime chassis" once the in-game "Blueprint" suffix is added back —
+        #   the fuzzy fallback used to prefer the shorter, wrong entry over the
+        #   correct component match.
+        # Seeding reproduces the populated-cache condition of the live OCR
+        # hotkey path — an empty cache would bypass _resolve entirely and hide
+        # the regression. Items must still resolve to their true names.
         tmp_cache = os.path.join(tempfile.gettempdir(), f"ocr_test_cache_{fname}.json")
         with open(tmp_cache, "w", encoding="utf-8") as f:
-            json.dump({"zakti prime blueprint": 100}, f)
+            json.dump({"zakti prime blueprint": 100, "chroma prime blueprint": 15}, f)
 
         try:
             results, skipped, resolver_unavailable, unresolved = ocr_scanner.scan(
