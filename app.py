@@ -4,12 +4,25 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from config_manager import DUCAT_VALUES, append_trade, clear_trades, load_api_config, load_config, load_ocr_hotkey, load_trades, save_trades
+from config_manager import (
+    DUCAT_VALUES,
+    append_trade,
+    clear_trades,
+    load_api_config,
+    load_config,
+    load_ocr_hotkey,
+    load_show_thumbnails,
+    load_trades,
+    save_show_thumbnails,
+    save_trades,
+)
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
+THUMB_SIZE = 64
 
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ITEM_IMAGES_DIR = os.path.join(ASSETS_DIR, "item_images")
 
 
 class DucatCalculatorApp:
@@ -20,7 +33,10 @@ class DucatCalculatorApp:
 
         self.price_map = load_config()
         self.history = []
+        self.trade_items = []
         self.ducat_icon = tk.PhotoImage(file=os.path.join(ASSETS_DIR, "ducat_icon.png"))
+        self.placeholder_icon = tk.PhotoImage(file=os.path.join(ASSETS_DIR, "placeholder.png"))
+        self._thumb_images = []  # holds PhotoImage refs so Tk doesn't garbage-collect them
 
         self._hotkey_listener = None
         self._status_after_id = None
@@ -86,7 +102,7 @@ class DucatCalculatorApp:
         for item in results:
             if len(self.history) >= TRADE_ITEM_LIMIT:
                 break
-            self.add_item(item["ducats"])
+            self.add_item(item["ducats"], item=item)
             added_items.append(item)
 
         names = ", ".join(
@@ -172,8 +188,35 @@ class DucatCalculatorApp:
         self.lifetime_avg_label = ttk.Label(lifetime_frame, font=("Segoe UI", 11))
         self.lifetime_avg_label.grid(row=2, column=0, sticky="w", pady=2)
 
+        thumb_frame = ttk.LabelFrame(container, text="Trade Items", padding=8)
+        thumb_frame.grid(
+            row=2, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(0, 12)
+        )
+        self.thumb_frame = thumb_frame
+
+        self.thumb_cells = []
+        for col in range(TRADE_ITEM_LIMIT):
+            cell = ttk.Frame(thumb_frame, padding=4)
+            cell.grid(row=0, column=col, sticky="n")
+            image_label = ttk.Label(cell, image=self.placeholder_icon)
+            image_label.grid(row=0, column=0)
+            name_label = ttk.Label(
+                cell, text="", font=("Segoe UI", 8), anchor="center",
+                justify="center", wraplength=80,
+            )
+            name_label.grid(row=1, column=0, pady=(2, 0))
+            ducat_label = ttk.Label(cell, text="", font=("Segoe UI", 8, "bold"), anchor="center")
+            ducat_label.grid(row=2, column=0)
+            self.thumb_cells.append(
+                {"image": image_label, "name": name_label, "ducats": ducat_label}
+            )
+
+        self.show_thumbnails_var = tk.BooleanVar(value=load_show_thumbnails())
+        if not self.show_thumbnails_var.get():
+            thumb_frame.grid_remove()
+
         controls_frame = ttk.Frame(container)
-        controls_frame.grid(row=2, column=0, columnspan=len(DUCAT_VALUES))
+        controls_frame.grid(row=3, column=0, columnspan=len(DUCAT_VALUES))
 
         ttk.Button(controls_frame, text="Undo", command=self.undo_item).grid(row=0, column=0, padx=4)
         ttk.Button(controls_frame, text="Reset", command=self.reset_trade).grid(row=0, column=1, padx=4)
@@ -183,29 +226,48 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
         self.export_button = ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet)
         self.export_button.grid(row=0, column=6, padx=4)
+        ttk.Checkbutton(
+            controls_frame,
+            text="Show item thumbnails",
+            variable=self.show_thumbnails_var,
+            command=self._toggle_thumbnails,
+        ).grid(row=0, column=7, padx=4)
 
         self._status_label = ttk.Label(
             container, text="", anchor="w", font=("Segoe UI", 9), foreground="grey"
         )
         self._status_label.grid(
-            row=3, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(8, 0)
+            row=4, column=0, columnspan=len(DUCAT_VALUES), sticky="ew", pady=(8, 0)
         )
 
-    def add_item(self, ducat_value):
+    def add_item(self, ducat_value, item=None):
         if len(self.history) >= TRADE_ITEM_LIMIT:
             return
         self.history.append(ducat_value)
+        if item is not None:
+            self.trade_items.append({
+                "name": item.get("name"),
+                "ducats": ducat_value,
+                "image": item.get("image"),
+                "source": item.get("source"),
+            })
+        else:
+            self.trade_items.append({
+                "name": None, "ducats": ducat_value, "image": None, "source": "manual",
+            })
         self.refresh_display()
 
     def undo_item(self):
         if self.history:
             self.history.pop()
+            self.trade_items.pop()
             self.refresh_display()
             if not self.history:
                 self._set_status("")  # trade emptied — drop the OCR summary
 
     def reset_trade(self):
         self.history.clear()
+        self.trade_items.clear()
         self.refresh_display()
         self._set_status("")  # clear any persistent OCR summary
 
@@ -311,3 +373,53 @@ class DucatCalculatorApp:
 
         for button in self.ducat_buttons:
             button.state(["disabled" if is_full else "!disabled"])
+
+        self.refresh_thumbnails()
+
+    def _toggle_thumbnails(self):
+        show = self.show_thumbnails_var.get()
+        if show:
+            self.thumb_frame.grid()
+        else:
+            self.thumb_frame.grid_remove()
+        save_show_thumbnails(show)
+
+    def refresh_thumbnails(self):
+        self._thumb_images.clear()
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            Image = ImageTk = None
+
+        for i, cell in enumerate(self.thumb_cells):
+            if i >= len(self.trade_items):
+                cell["image"].config(image=self.placeholder_icon)
+                cell["name"].config(text="")
+                cell["ducats"].config(text="")
+                continue
+
+            entry = self.trade_items[i]
+            photo = None
+            if entry.get("image") and Image is not None:
+                image_path = os.path.join(ITEM_IMAGES_DIR, entry["image"])
+                try:
+                    pil_image = Image.open(image_path).convert("RGBA")
+                    pil_image = pil_image.resize((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(pil_image)
+                except Exception:
+                    photo = None
+
+            if photo is not None:
+                self._thumb_images.append(photo)
+                cell["image"].config(image=photo)
+            else:
+                cell["image"].config(image=self.placeholder_icon)
+
+            source = entry.get("source")
+            if source == "manual":
+                cell["name"].config(text="(manual)")
+            elif source == "unresolved":
+                cell["name"].config(text="(unresolved)")
+            else:
+                cell["name"].config(text=(entry.get("name") or "").title())
+            cell["ducats"].config(text=f"{entry.get('ducats', 0)} ducats")

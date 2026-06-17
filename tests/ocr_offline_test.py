@@ -162,6 +162,21 @@ def main():
         if bad:
             failures.append(f"{fname}: non-tier ducat values {bad}")
 
+        # Resolved entries should carry an image filename that exists on disk
+        # (lenient: a resolved item missing from the bundled index is informational,
+        # not a failure, since the index can lag a @wfcd/items update).
+        missing_images = [
+            r["name"] for r in resolved
+            if r.get("image") and not os.path.exists(
+                os.path.join(_BASE_DIR, "assets", "item_images", r["image"])
+            )
+        ]
+        if missing_images:
+            failures.append(f"{fname}: image file missing for {missing_images}")
+        no_image = [r["name"] for r in resolved if not r.get("image")]
+        if no_image:
+            print(f"  (no image mapping for: {no_image})")
+
     print()
     if failures:
         print("FAIL:")

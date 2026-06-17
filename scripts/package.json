@@ -2,7 +2,8 @@
   "name": "wf-ducat-tools",
   "private": true,
   "scripts": {
-    "generate": "node wf_ducat_lookup.js --generate"
+    "generate": "node wf_ducat_lookup.js --generate",
+    "fetch-images": "node fetch_item_images.js"
   },
   "dependencies": {
     "@wfcd/items": "latest"

@@ -16,6 +16,7 @@ import subprocess
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
+_IMAGE_INDEX_PATH = os.path.join(_BASE_DIR, "assets", "item_images", "index.json")
 
 
 def scan(lookup_path=None, image=None):
@@ -35,7 +36,11 @@ def scan(lookup_path=None, image=None):
 
     Returns (results, skipped, resolver_unavailable, unresolved) where:
       results: list of {"name": str, "ducats": int,
-                        "source": "cache"|"fetched"|"unresolved"}, one per slot
+                        "source": "cache"|"fetched"|"unresolved",
+                        "image": str|None}, one per slot. "image" is the
+        thumbnail filename under assets/item_images/ (per
+        assets/item_images/index.json), or None when unresolved or not
+        present in the index.
       skipped: count of 0-ducat placeholder entries (unresolved slots)
       resolver_unavailable: True if there were misses but Node/@wfcd/items could
         not be reached (callers surface a 'run npm install' hint)
@@ -75,6 +80,7 @@ def scan(lookup_path=None, image=None):
     _configure_tesseract(pytesseract)
 
     lookup = _load_lookup(lookup_path)
+    image_index = _load_image_index(_IMAGE_INDEX_PATH)
 
     if image is None:
         try:
@@ -138,6 +144,11 @@ def scan(lookup_path=None, image=None):
                 "source": "unresolved",
             }
             unresolved.append({"assembled": names[i], "normalized": norm})
+
+    for entry in entries:
+        entry["image"] = (
+            image_index.get(entry["name"]) if entry["source"] != "unresolved" else None
+        )
 
     skipped = len(unresolved)
     return entries, skipped, resolver_unavailable, unresolved
@@ -299,6 +310,17 @@ def _load_lookup(path):
         return {_normalize(k): int(v) for k, v in raw.items()}
     except Exception as e:
         raise RuntimeError(f"Failed to read data/ducat_lookup.json:\n{e}")
+
+
+def _load_image_index(path):
+    """Load the normalized-name -> thumbnail-filename map. A missing file means no images."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def _normalize(text):

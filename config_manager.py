@@ -76,6 +76,28 @@ def save_ocr_hotkey(hotkey):
         json.dump(config, f, indent=2)
 
 
+def load_show_thumbnails():
+    """Return whether the thumbnail row should be shown, defaulting to True if unset."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("show_thumbnails", True))
+    except Exception:
+        return True
+
+
+def save_show_thumbnails(value):
+    """Write the show_thumbnails flag to config.json, preserving all other keys."""
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    config["show_thumbnails"] = bool(value)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
 def load_trades():
     """Return the list of trade records, creating an empty trades.json if absent."""
     os.makedirs(DATA_DIR, exist_ok=True)
