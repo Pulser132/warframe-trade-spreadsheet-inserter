@@ -8,3 +8,5 @@ scripts/node_modules/
 scripts/package-lock.json
 .claude
 OCR Test Images/
+goal.md
+checklist.md
