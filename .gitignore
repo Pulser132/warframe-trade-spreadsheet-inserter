@@ -3,11 +3,11 @@ __pycache__/
 CLAUDE.md
 data/
 configs/
-Todo/
+Todo_UX-Overhaul/
 scripts/node_modules/
 scripts/package-lock.json
 .claude
 OCR Test Images/
 goal.md
 checklist.md
-IDEAS.md
+Ideas/
