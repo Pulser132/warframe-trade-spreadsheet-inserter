@@ -14,9 +14,11 @@ import os
 import re
 import subprocess
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_LOOKUP_PATH = os.path.join(_BASE_DIR, "data", "ducat_lookup.json")
-_IMAGE_INDEX_PATH = os.path.join(_BASE_DIR, "assets", "item_images", "index.json")
+from paths import resource_path, user_data_path
+
+_LOOKUP_PATH = user_data_path("data", "ducat_lookup.json")
+_IMAGE_INDEX_PATH = resource_path("assets", "item_images", "index.json")
+_SEED_LOOKUP_PATH = resource_path("assets", "seed", "ducat_lookup.json")
 
 
 def scan(lookup_path=None, image=None):
@@ -294,6 +296,29 @@ def _clean_label(raw):
     return " ".join(tokens)
 
 
+def _ensure_lookup_seeded(path):
+    """Copy the bundled seed cache to the writable path on first run, if absent.
+
+    Only applies to the real writable lookup path: a fresh install has no
+    data/ducat_lookup.json yet, so without this every item would need a Node
+    round-trip (or fail entirely when scripts/ isn't bundled) before the cache
+    self-warms. The seed is pre-warmed via `npm run generate` and committed at
+    assets/seed/ducat_lookup.json.
+    """
+    if path != _LOOKUP_PATH:
+        return
+    if os.path.exists(path) or not os.path.exists(_SEED_LOOKUP_PATH):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(_SEED_LOOKUP_PATH, "r", encoding="utf-8") as f:
+            seed = f.read()
+    except OSError:
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(seed)
+
+
 def _load_lookup(path):
     """Load and normalize the ducat cache. A missing file means an empty cache.
 
@@ -302,6 +327,7 @@ def _load_lookup(path):
     file is fine. A file that exists but can't be parsed is a real error and is
     surfaced to the caller.
     """
+    _ensure_lookup_seeded(path)
     if not os.path.exists(path):
         return {}
     try:
@@ -396,7 +422,7 @@ def _resolve_via_wfcd(queries):
     True when Node or scripts/node_modules is missing, or the call otherwise
     fails — callers treat that as "leave these unresolved" rather than erroring.
     """
-    script_dir = os.path.join(_BASE_DIR, "scripts")
+    script_dir = resource_path("scripts")
     script = os.path.join(script_dir, "wf_ducat_lookup.js")
     node_modules = os.path.join(script_dir, "node_modules")
     if not os.path.exists(script) or not os.path.isdir(node_modules):

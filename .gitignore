@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 CLAUDE.md
+dist/
+build/
 data/
 configs/
 Todo_UX-Overhaul/
@@ -11,4 +13,5 @@ OCR Test Images/
 goal.md
 checklist.md
 Ideas/
-Todo_History
+Todo_History/
+Todo_Installer/

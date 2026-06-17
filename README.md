@@ -31,6 +31,43 @@ python main.py
 
 The app launches normally even if the Google Sheets libraries aren't installed or `configs/api_config.json` doesn't exist.
 
+## Build / Install (Windows executable)
+
+For users who don't want to set up Python, the app can be packaged as a standalone
+Windows executable via [PyInstaller](https://pyinstaller.org/).
+
+### Building
+
+1. **Install dependencies:**
+   ```
+   pip install -r requirements.txt -r requirements-build.txt
+   ```
+   `requirements.txt` is optional but recommended — any library missing at build time is
+   silently left out of the bundle (the build script warns about this). Node.js is only
+   needed to refresh the pre-warmed ducat cache (`assets/seed/ducat_lookup.json`); without
+   it the build reuses the existing committed seed. Tesseract is a runtime-only OCR
+   dependency and isn't needed to build.
+2. **Run the build script:**
+   ```
+   .\build.ps1
+   ```
+   This validates the environment, refreshes the seed cache (if Node is available), cleans
+   previous output, runs PyInstaller against the committed `WarframeDucatCalculator.spec`,
+   and zips the result. Re-run it after any feature change — output always lands at
+   `dist/WarframeDucatCalculator/` plus a versioned zip (`dist/WarframeDucatCalculator-<version>.zip`).
+
+### Installing (end users)
+
+1. Unzip `WarframeDucatCalculator-<version>.zip` to a **stable location** — `configs/` and
+   `data/` are created beside the exe and persist there across runs, so don't unzip to a
+   temp folder you'll delete.
+2. Run `WarframeDucatCalculator.exe`. No Python install required.
+3. For Google Sheets export, copy `api_config.example.json` (shipped beside the exe) to
+   `configs/api_config.json` and fill in your values — see the Google Sheets Export section
+   below.
+4. For the OCR Trade Scanner, install the Tesseract-OCR binary (see the OCR section below);
+   the ducat-value cache ships pre-warmed, so no Node.js install is needed at runtime.
+
 ## Configuration
 
 Platinum prices per ducat tier are stored in `configs/config.json`. The file is created automatically with defaults on first run and can be edited via the **Settings** dialog in the app.

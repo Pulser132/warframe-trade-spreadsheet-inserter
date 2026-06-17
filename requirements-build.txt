@@ -1,0 +1,3 @@
+# Build-only dependency for producing the Windows executable via build.ps1.
+# Install alongside requirements.txt: pip install -r requirements.txt -r requirements-build.txt
+pyinstaller

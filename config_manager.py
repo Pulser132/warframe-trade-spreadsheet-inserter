@@ -4,14 +4,14 @@ import json
 import os
 from datetime import datetime
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+from paths import user_data_path
 
-API_CONFIG_PATH = os.path.join(_BASE_DIR, "configs", "api_config.json")
+API_CONFIG_PATH = user_data_path("configs", "api_config.json")
 
-CONFIGS_DIR = os.path.join(_BASE_DIR, "configs")
+CONFIGS_DIR = user_data_path("configs")
 CONFIG_PATH = os.path.join(CONFIGS_DIR, "config.json")
 
-DATA_DIR = os.path.join(_BASE_DIR, "data")
+DATA_DIR = user_data_path("data")
 TRADES_PATH = os.path.join(DATA_DIR, "trades.json")
 
 DUCAT_VALUES = [15, 25, 45, 65, 100]

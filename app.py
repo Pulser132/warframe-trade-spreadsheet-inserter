@@ -17,12 +17,13 @@ from config_manager import (
     save_trades,
 )
 from history_window import HistoryWindow
+from paths import resource_path
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
 THUMB_SIZE = 64
 
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ASSETS_DIR = resource_path("assets")
 ITEM_IMAGES_DIR = os.path.join(ASSETS_DIR, "item_images")
 
 
