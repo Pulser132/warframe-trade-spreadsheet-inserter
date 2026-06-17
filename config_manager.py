@@ -153,6 +153,16 @@ def save_trades(trades):
         json.dump(trades, f, indent=2)
 
 
+def delete_trade(index):
+    """Remove the trade record at index, persisting the result. No-op if out of range."""
+    trades = load_trades()
+    if 0 <= index < len(trades):
+        record = trades.pop(index)
+        save_trades(trades)
+        return record
+    return None
+
+
 def load_api_config():
     """Return the API config dict, or raise RuntimeError with a friendly message."""
     if not os.path.exists(API_CONFIG_PATH):

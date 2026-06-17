@@ -16,6 +16,7 @@ from config_manager import (
     save_show_thumbnails,
     save_trades,
 )
+from history_window import HistoryWindow
 from settings_window import SettingsWindow
 
 TRADE_ITEM_LIMIT = 6
@@ -222,16 +223,17 @@ class DucatCalculatorApp:
         ttk.Button(controls_frame, text="Reset", command=self.reset_trade).grid(row=0, column=1, padx=4)
         ttk.Button(controls_frame, text="Log Trade", style="LogTrade.TButton", command=self.log_trade).grid(row=0, column=2, padx=4)
         ttk.Button(controls_frame, text="Settings", command=self.open_settings).grid(row=0, column=3, padx=4)
-        ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=4, padx=4)
-        ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=5, padx=4)
+        ttk.Button(controls_frame, text="History", command=self.open_history).grid(row=0, column=4, padx=4)
+        ttk.Button(controls_frame, text="Copy WTB Message", command=self.copy_wtb_message).grid(row=0, column=5, padx=4)
+        ttk.Button(controls_frame, text="Reset Trade Total", command=self.reset_trade_total).grid(row=0, column=6, padx=4)
         self.export_button = ttk.Button(controls_frame, text="Export to Spreadsheet", command=self.export_to_spreadsheet)
-        self.export_button.grid(row=0, column=6, padx=4)
+        self.export_button.grid(row=0, column=7, padx=4)
         ttk.Checkbutton(
             controls_frame,
             text="Show item thumbnails",
             variable=self.show_thumbnails_var,
             command=self._toggle_thumbnails,
-        ).grid(row=0, column=7, padx=4)
+        ).grid(row=0, column=8, padx=4)
 
         self._status_label = ttk.Label(
             container, text="", anchor="w", font=("Segoe UI", 9), foreground="grey"
@@ -344,6 +346,9 @@ class DucatCalculatorApp:
 
     def open_settings(self):
         SettingsWindow(self)
+
+    def open_history(self):
+        HistoryWindow(self)
 
     def copy_wtb_message(self):
         ducat_values = "/".join(str(v) for v in DUCAT_VALUES)
