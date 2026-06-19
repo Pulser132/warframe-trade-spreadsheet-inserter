@@ -88,7 +88,7 @@ class DucatCalculatorApp:
 
         try:
             import ocr_scanner
-            results, skipped, resolver_unavailable, _ = ocr_scanner.scan()
+            results, skipped, _, _ = ocr_scanner.scan()
         except RuntimeError as e:
             self._set_status("")
             messagebox.showerror("OCR Scan Error", str(e))
@@ -119,10 +119,7 @@ class DucatCalculatorApp:
         )
         if placeholder_count:
             plural = "s" if placeholder_count != 1 else ""
-            note = f"{placeholder_count} non-ducat placeholder{plural} @ 0"
-            if resolver_unavailable:
-                note += " — run: npm install in scripts/"
-            notes.append(note)
+            notes.append(f"{placeholder_count} non-ducat placeholder{plural} @ 0")
 
         count = len(added_items)
         msg = f"OCR: added {count} item{'s' if count != 1 else ''} — {names}"
@@ -201,17 +198,39 @@ class DucatCalculatorApp:
             cell = ttk.Frame(thumb_frame, padding=4)
             cell.grid(row=0, column=col, sticky="n")
             image_label = ttk.Label(cell, image=self.placeholder_icon)
-            image_label.grid(row=0, column=0)
+            image_label.grid(row=0, column=0, columnspan=2)
             name_label = ttk.Label(
                 cell, text="", font=("Segoe UI", 8), anchor="center",
                 justify="center", wraplength=80,
             )
-            name_label.grid(row=1, column=0, pady=(2, 0))
-            ducat_label = ttk.Label(cell, text="", font=("Segoe UI", 8, "bold"), anchor="center")
-            ducat_label.grid(row=2, column=0)
-            self.thumb_cells.append(
-                {"image": image_label, "name": name_label, "ducats": ducat_label}
+            name_label.grid(row=1, column=0, columnspan=2, pady=(2, 0))
+
+            ttk.Label(cell, text="Ducats:", font=("Segoe UI", 7)).grid(row=2, column=0, sticky="e")
+            ducats_var = tk.StringVar()
+            ducats_entry = ttk.Entry(
+                cell, textvariable=ducats_var, width=5, justify="right", font=("Segoe UI", 8),
             )
+            ducats_entry.grid(row=2, column=1, sticky="w", padx=(2, 0))
+            ducats_entry.bind("<Return>", lambda e, i=col: self._commit_ducats_edit(i))
+            ducats_entry.bind("<FocusOut>", lambda e, i=col: self._commit_ducats_edit(i))
+
+            ttk.Label(cell, text="Plat:", font=("Segoe UI", 7)).grid(row=3, column=0, sticky="e")
+            platinum_var = tk.StringVar()
+            platinum_entry = ttk.Entry(
+                cell, textvariable=platinum_var, width=5, justify="right", font=("Segoe UI", 8),
+            )
+            platinum_entry.grid(row=3, column=1, sticky="w", padx=(2, 0))
+            platinum_entry.bind("<Return>", lambda e, i=col: self._commit_platinum_edit(i))
+            platinum_entry.bind("<FocusOut>", lambda e, i=col: self._commit_platinum_edit(i))
+
+            self.thumb_cells.append({
+                "image": image_label,
+                "name": name_label,
+                "ducats_var": ducats_var,
+                "ducats_entry": ducats_entry,
+                "platinum_var": platinum_var,
+                "platinum_entry": platinum_entry,
+            })
 
         self.show_thumbnails_var = tk.BooleanVar(value=load_show_thumbnails())
         if not self.show_thumbnails_var.get():
@@ -253,11 +272,56 @@ class DucatCalculatorApp:
                 "ducats": ducat_value,
                 "image": item.get("image"),
                 "source": item.get("source"),
+                "platinum_override": None,
             })
         else:
             self.trade_items.append({
                 "name": None, "ducats": ducat_value, "image": None, "source": "manual",
+                "platinum_override": None,
             })
+        self.refresh_display()
+
+    def _item_platinum(self, entry):
+        override = entry.get("platinum_override")
+        if override is not None:
+            return override
+        return self.price_map.get(entry["ducats"], 0)
+
+    def _commit_ducats_edit(self, index):
+        if index >= len(self.trade_items):
+            return
+        cell = self.thumb_cells[index]
+        entry = self.trade_items[index]
+        text = cell["ducats_var"].get().strip()
+        if not text.isdigit():
+            messagebox.showerror(
+                "Invalid value", "Ducat value must be a non-negative whole number."
+            )
+            cell["ducats_var"].set(str(entry["ducats"]))
+            return
+        new_value = int(text)
+        if new_value == entry["ducats"]:
+            return
+        entry["ducats"] = new_value
+        self.history[index] = new_value
+        self.refresh_display()
+
+    def _commit_platinum_edit(self, index):
+        if index >= len(self.trade_items):
+            return
+        cell = self.thumb_cells[index]
+        entry = self.trade_items[index]
+        text = cell["platinum_var"].get().strip()
+        if not text.isdigit():
+            messagebox.showerror(
+                "Invalid value", "Platinum value must be a non-negative whole number."
+            )
+            cell["platinum_var"].set(str(self._item_platinum(entry)))
+            return
+        new_value = int(text)
+        if new_value == self._item_platinum(entry):
+            return
+        entry["platinum_override"] = new_value
         self.refresh_display()
 
     def undo_item(self):
@@ -278,7 +342,7 @@ class DucatCalculatorApp:
         if not self.history:
             return
         total_ducats = sum(self.history)
-        total_platinum = sum(self.price_map.get(d, 0) for d in self.history)
+        total_platinum = sum(self._item_platinum(e) for e in self.trade_items)
         append_trade(total_ducats, total_platinum)
         self.reset_trade()
         self.refresh_lifetime_totals()
@@ -366,7 +430,7 @@ class DucatCalculatorApp:
     def refresh_display(self):
         item_count = len(self.history)
         total_ducats = sum(self.history)
-        total_platinum = sum(self.price_map.get(d, 0) for d in self.history)
+        total_platinum = sum(self._item_platinum(e) for e in self.trade_items)
 
         self.items_label.config(text=f"Items: {item_count} / {TRADE_ITEM_LIMIT}")
         self.ducats_label.config(text=f"Total Ducats: {total_ducats}")
@@ -401,7 +465,10 @@ class DucatCalculatorApp:
             if i >= len(self.trade_items):
                 cell["image"].config(image=self.placeholder_icon)
                 cell["name"].config(text="")
-                cell["ducats"].config(text="")
+                cell["ducats_var"].set("")
+                cell["platinum_var"].set("")
+                cell["ducats_entry"].state(["disabled"])
+                cell["platinum_entry"].state(["disabled"])
                 continue
 
             entry = self.trade_items[i]
@@ -428,4 +495,7 @@ class DucatCalculatorApp:
                 cell["name"].config(text="(unresolved)")
             else:
                 cell["name"].config(text=(entry.get("name") or "").title())
-            cell["ducats"].config(text=f"{entry.get('ducats', 0)} ducats")
+            cell["ducats_entry"].state(["!disabled"])
+            cell["platinum_entry"].state(["!disabled"])
+            cell["ducats_var"].set(str(entry.get("ducats", 0)))
+            cell["platinum_var"].set(str(self._item_platinum(entry)))
