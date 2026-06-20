@@ -18,6 +18,16 @@ DUCAT_VALUES = [15, 25, 45, 65, 100]
 
 DEFAULT_PRICE_MAP = {15: 0, 25: 0, 45: 0, 65: 0, 100: 0}
 
+# The four live-tunable OCR fuzziness thresholds (see resolver.py / ocr_scanner.py).
+# pass1_cutoff/pass1_anchor gate Pass 1 (`ocr_scanner._resolve`); pass2_whole/pass2_token
+# gate Pass 2 (`resolver.resolve_one`). Defaults equal the historically hardcoded values.
+DEFAULT_OCR_THRESHOLDS = {
+    "pass1_cutoff": 0.75,
+    "pass1_anchor": 0.70,
+    "pass2_whole": 0.85,
+    "pass2_token": 0.80,
+}
+
 
 def load_config():
     """Return the ducat -> platinum price map, creating a default file if needed."""
@@ -72,6 +82,90 @@ def save_ocr_hotkey(hotkey):
     except Exception:
         config = {}
     config["ocr_hotkey"] = hotkey
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def _clamp_unit(value):
+    """Coerce to float and clamp into the inclusive 0.0–1.0 range."""
+    return max(0.0, min(1.0, float(value)))
+
+
+def load_ocr_thresholds():
+    """Return the four OCR fuzziness thresholds, merging defaults for missing keys.
+
+    Each value is coerced to float and clamped to 0.0–1.0. Any read/parse error
+    (or a missing file) yields a fresh copy of DEFAULT_OCR_THRESHOLDS.
+    """
+    thresholds = dict(DEFAULT_OCR_THRESHOLDS)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            stored = json.load(f).get("ocr_thresholds", {})
+        if isinstance(stored, dict):
+            for key in DEFAULT_OCR_THRESHOLDS:
+                if key in stored:
+                    thresholds[key] = _clamp_unit(stored[key])
+    except Exception:
+        return dict(DEFAULT_OCR_THRESHOLDS)
+    return thresholds
+
+
+def save_ocr_thresholds(thresholds):
+    """Write the four OCR thresholds (clamped floats) to config.json, preserving other keys."""
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    config["ocr_thresholds"] = {
+        key: _clamp_unit(thresholds.get(key, DEFAULT_OCR_THRESHOLDS[key]))
+        for key in DEFAULT_OCR_THRESHOLDS
+    }
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def load_debug_hotkey():
+    """Return the configured debug-capture hotkey string, defaulting to '<F9>' if unset."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("debug_hotkey", "<F9>")
+    except Exception:
+        return "<F9>"
+
+
+def save_debug_hotkey(hotkey):
+    """Write the debug hotkey string to config.json, preserving all other keys."""
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    config["debug_hotkey"] = hotkey
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def load_debug_auto_capture():
+    """Return whether a debug bundle is written after every normal scan, default False."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("debug_auto_capture", False))
+    except Exception:
+        return False
+
+
+def save_debug_auto_capture(value):
+    """Write the debug_auto_capture flag to config.json, preserving all other keys."""
+    os.makedirs(CONFIGS_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    config["debug_auto_capture"] = bool(value)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 

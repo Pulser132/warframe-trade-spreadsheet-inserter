@@ -2,16 +2,16 @@
 
 Runs ocr_scanner.scan() against saved trade-window screenshots in
 "OCR Test Images/" instead of a live screen grab, so the detection → OCR →
-cache/@wfcd/items resolution pipeline can be exercised without the game running.
+resolution pipeline can be exercised without the game running.
 
 Run it directly:
 
     python tests/ocr_offline_test.py
 
 Requirements: the optional OCR deps (Pillow, opencv-python, pytesseract) plus the
-Tesseract binary, and — to resolve names not already cached — Node with
-@wfcd/items installed (cd scripts && npm install). If the deps or images are
-missing the test SKIPS (exit 0) rather than failing, so it's safe in CI.
+Tesseract binary. Resolution itself is pure Python (resolver.py, no Node/internet
+needed — see tests/test_resolver.py for resolver-only unit tests). If the deps or
+images are missing the test SKIPS (exit 0) rather than failing, so it's safe in CI.
 
 Each run uses a throwaway cache file, so your real data/ducat_lookup.json is left
 untouched.
@@ -93,11 +93,19 @@ def main():
     if not images:
         _skip("no test images found")
 
+    seed_path = os.path.join(_BASE_DIR, "assets", "seed", "ducat_lookup.json")
+    with open(seed_path, "r", encoding="utf-8") as f:
+        seed_lookup = json.load(f)
+
     failures = []
     for fname in images:
         path = os.path.join(IMAGES_DIR, fname)
         # Throwaway cache so the real data/ducat_lookup.json isn't modified.
-        # Seed it with colliding decoys that reproduce real cache-collision bugs:
+        # Mirrors the real, fully-seeded production cache (resolver.py's Pass 2
+        # runs over this same data — see ocr_scanner.scan() — so it needs the
+        # full 571-entry seed, not just a couple of decoy keys) while still
+        # reproducing real cache-collision bugs, since these two entries are
+        # genuinely in the seed at these values:
         # - "zakti prime blueprint" shares the "<prime> <component>" suffix with
         #   many items, so the Python cache-side fuzzy step (ocr_scanner._resolve)
         #   used to mis-match correctly-read names like "akbolto prime
@@ -106,15 +114,14 @@ def main():
         #   prime chassis" once the in-game "Blueprint" suffix is added back —
         #   the fuzzy fallback used to prefer the shorter, wrong entry over the
         #   correct component match.
-        # Seeding reproduces the populated-cache condition of the live OCR
-        # hotkey path — an empty cache would bypass _resolve entirely and hide
-        # the regression. Items must still resolve to their true names.
+        # Items must still resolve to their true names despite these decoys
+        # being present in the cache.
         tmp_cache = os.path.join(tempfile.gettempdir(), f"ocr_test_cache_{fname}.json")
         with open(tmp_cache, "w", encoding="utf-8") as f:
-            json.dump({"zakti prime blueprint": 100, "chroma prime blueprint": 15}, f)
+            json.dump(seed_lookup, f)
 
         try:
-            results, skipped, resolver_unavailable, unresolved = ocr_scanner.scan(
+            results, skipped, _, unresolved = ocr_scanner.scan(
                 lookup_path=tmp_cache, image=path
             )
         except RuntimeError as e:
@@ -128,8 +135,7 @@ def main():
         placeholders = [r for r in results if r["ducats"] == 0]
         print(f"\n=== {fname} ===")
         print(f"  slots {len(results)} (resolved {len(resolved)}, "
-              f"placeholders {len(placeholders)}), skipped {skipped}, "
-              f"resolver_unavailable={resolver_unavailable}")
+              f"placeholders {len(placeholders)}), skipped {skipped}")
         for r in results:
             print(f"    [{r['source']:10}] {r['name']} -> {r['ducats']} ducats")
         for u in unresolved:
@@ -139,10 +145,6 @@ def main():
         if not exp:
             print("  (no expectations defined — informational only)")
             continue
-
-        if resolver_unavailable and not resolved:
-            _skip(f"{fname}: @wfcd/items resolver unavailable "
-                  "(cd scripts && npm install) — cannot validate")
 
         resolved_set = {r["name"] for r in resolved}
         missing = exp["expected"] - resolved_set

@@ -5,6 +5,7 @@ dist/
 build/
 data/
 configs/
+debug/
 Todo_UX-Overhaul/
 scripts/node_modules/
 scripts/package-lock.json
@@ -15,3 +16,5 @@ checklist.md
 Ideas/
 Todo_History/
 Todo_Installer/
+Todo_distfix/
+Todo_debug/

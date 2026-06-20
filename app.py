@@ -10,6 +10,8 @@ from config_manager import (
     clear_trades,
     load_api_config,
     load_config,
+    load_debug_auto_capture,
+    load_debug_hotkey,
     load_ocr_hotkey,
     load_show_thumbnails,
     load_trades,
@@ -41,14 +43,20 @@ class DucatCalculatorApp:
         self._thumb_images = []  # holds PhotoImage refs so Tk doesn't garbage-collect them
 
         self._hotkey_listener = None
+        self._debug_hotkey_listener = None
         self._status_after_id = None
         self._build_widgets()
         self.refresh_display()
         self.refresh_lifetime_totals()
-        self._setup_ocr_hotkey()
+        self._setup_hotkeys()
         self.root.bind("<Control-z>", lambda e: self.undo_item())
         self.root.bind("<Return>", lambda e: self.log_trade())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _setup_hotkeys(self):
+        """(Re)bind both the OCR scan hotkey and the debug-capture hotkey."""
+        self._setup_ocr_hotkey()
+        self._setup_debug_hotkey()
 
     def _setup_ocr_hotkey(self):
         if self._hotkey_listener is not None:
@@ -71,6 +79,27 @@ class DucatCalculatorApp:
             self._hotkey_listener = None
             self._set_status(f"OCR hotkey error: {e}")
 
+    def _setup_debug_hotkey(self):
+        if self._debug_hotkey_listener is not None:
+            self._debug_hotkey_listener.stop()
+            self._debug_hotkey_listener = None
+
+        hotkey = load_debug_hotkey()
+        try:
+            from pynput import keyboard
+        except ImportError:
+            return
+
+        def _on_trigger():
+            self.root.after(0, self.debug_capture_scan)
+
+        try:
+            self._debug_hotkey_listener = keyboard.GlobalHotKeys({hotkey.lower(): _on_trigger})
+            self._debug_hotkey_listener.start()
+        except Exception as e:
+            self._debug_hotkey_listener = None
+            self._set_status(f"Debug hotkey error: {e}")
+
     def _set_status(self, msg, duration_ms=4000):
         """Show a transient message in the status bar, auto-clearing after duration_ms."""
         if self._status_after_id:
@@ -86,18 +115,43 @@ class DucatCalculatorApp:
         self._set_status("Scanning…", duration_ms=0)
         self.root.update()  # force redraw before the blocking OCR call
 
+        auto_capture = load_debug_auto_capture()
         try:
             import ocr_scanner
-            results, skipped, _, _ = ocr_scanner.scan()
+            if auto_capture:
+                # Single scan: the debug path produces both the results and the
+                # diagnostic payload, so auto-capture doesn't re-scan.
+                results, skipped, unresolved, debug_payload = ocr_scanner.scan_debug()
+            else:
+                results, skipped, _, _ = ocr_scanner.scan()
+                debug_payload = None
         except RuntimeError as e:
             self._set_status("")
             messagebox.showerror("OCR Scan Error", str(e))
             return
 
         if not results:
-            self._set_status("OCR: no trade slots detected.")
+            msg = "OCR: no trade slots detected."
+            if auto_capture and debug_payload is not None:
+                folder, error = self._write_debug_capture(debug_payload)
+                if error:
+                    msg += f"  ·  debug write failed: {error}"
+            self._set_status(msg)
             return
 
+        msg = self._add_scan_results(results)
+        if auto_capture and debug_payload is not None:
+            folder, error = self._write_debug_capture(debug_payload)
+            if folder:
+                msg += f"  ·  debug saved: {folder}"
+            elif error:
+                msg += f"  ·  debug write failed: {error}"
+        # Persistent: the summary stays until the trade is cleared (Reset/Log/Undo).
+        self._set_status(msg, duration_ms=0)
+
+    def _add_scan_results(self, results):
+        """Add every detected slot to the trade (capped at TRADE_ITEM_LIMIT) and
+        return the status-bar summary message. Shared by the normal and debug scans."""
         # Every detected slot is added, including 0-ducat placeholders for items
         # that couldn't be resolved (OCR garbage or non-ducat items like Arcanes).
         added_items = []
@@ -125,7 +179,41 @@ class DucatCalculatorApp:
         msg = f"OCR: added {count} item{'s' if count != 1 else ''} — {names}"
         if notes:
             msg += " (" + "; ".join(notes) + ")"
-        # Persistent: the summary stays until the trade is cleared (Reset/Log/Undo).
+        return msg
+
+    def _write_debug_capture(self, debug_payload):
+        """Write a debug bundle; return (folder_path, error_message). Either may be None."""
+        try:
+            import debug_capture
+            folder = debug_capture.write_capture(
+                debug_payload, debug_payload["thresholds"]
+            )
+            return folder, None
+        except RuntimeError as e:
+            return None, str(e)
+
+    def debug_capture_scan(self):
+        """Debug-hotkey scan: resolve like a normal scan but also write a full
+        diagnostic capture under debug/, reporting the saved folder."""
+        self._set_status("Scanning (debug)…", duration_ms=0)
+        self.root.update()  # force redraw before the blocking OCR call
+
+        try:
+            import ocr_scanner
+            results, skipped, unresolved, debug_payload = ocr_scanner.scan_debug()
+        except RuntimeError as e:
+            self._set_status("")
+            messagebox.showerror("OCR Scan Error", str(e))
+            return
+
+        msg = self._add_scan_results(results) if results else "OCR: no trade slots detected."
+
+        folder, error = self._write_debug_capture(debug_payload)
+        if folder:
+            msg += f"  ·  debug saved: {folder}"
+        elif error:
+            # Read-only dir etc. — keep any added items, surface the error.
+            msg += f"  ·  debug write failed: {error}"
         self._set_status(msg, duration_ms=0)
 
     def _on_close(self):
@@ -133,6 +221,8 @@ class DucatCalculatorApp:
             self.root.after_cancel(self._status_after_id)
         if self._hotkey_listener is not None:
             self._hotkey_listener.stop()
+        if self._debug_hotkey_listener is not None:
+            self._debug_hotkey_listener.stop()
         self.root.destroy()
 
     def _build_widgets(self):

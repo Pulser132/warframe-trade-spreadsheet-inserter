@@ -12,8 +12,9 @@ import difflib
 import json
 import os
 import re
-import subprocess
 
+import config_manager
+import resolver
 from paths import resource_path, user_data_path
 
 _LOOKUP_PATH = user_data_path("data", "ducat_lookup.json")
@@ -27,9 +28,12 @@ def scan(lookup_path=None, image=None):
     image may be None (grab the screen live), a path to an image file, or a PIL
     Image — the file/Image forms enable offline testing against saved captures.
 
-    Resolution is cache-aside: each name is matched against the local cache first
-    (exact, then fuzzy); cache misses are batched into a single @wfcd/items lookup
-    and appended back to the cache for next time.
+    Resolution is two-pass, both pure Python (no Node/internet at runtime):
+    Pass 1 is a local-cache exact/anchored-fuzzy match (`_resolve`); Pass 2 runs
+    cache misses through `resolver.resolve_one` — a pure-Python port of the
+    robust matcher formerly in scripts/wf_ducat_lookup.js — against the same
+    cache data (`resolver.build_index(lookup)`), recovering typo'd / merged-
+    token / mid-word-misread OCR reads.
 
     Each detected (filled) trade slot yields one ordered, left-to-right entry in
     results. Slots whose name can't be resolved to a ducat value (OCR garbage, or
@@ -44,12 +48,37 @@ def scan(lookup_path=None, image=None):
         assets/item_images/index.json), or None when unresolved or not
         present in the index.
       skipped: count of 0-ducat placeholder entries (unresolved slots)
-      resolver_unavailable: True if there were misses but Node/@wfcd/items could
-        not be reached (callers surface a 'run npm install' hint)
+      resolver_unavailable: deprecated, always False — Pass 2 is now pure
+        Python and runs over data already in the cache, so it can't be
+        "unavailable". Kept only for return-shape compatibility with callers.
       unresolved: list of {"assembled": str, "normalized": str} for each slot
         that could not be resolved; empty list if all slots resolved
     results is empty / skipped is 0 when no item names are found at all.
     Raises RuntimeError with a user-friendly message on any hard failure.
+    """
+    _, img_bgr, lookup, image_index, pytesseract = _prepare_scan(image, lookup_path)
+    names, _diag = _extract_item_names(img_bgr, pytesseract)
+
+    if not names:
+        return [], 0, False, []
+
+    thresholds = config_manager.load_ocr_thresholds()
+    entries, unresolved = _resolve_slots(
+        names, lookup, image_index, thresholds=thresholds
+    )
+    skipped = len(unresolved)
+    # resolver_unavailable is deprecated and always False (see docstring).
+    return entries, skipped, False, unresolved
+
+
+def _prepare_scan(image, lookup_path):
+    """Load the optional OCR deps, point Tesseract at its binary, load the lookup
+    cache + image index, and produce the screenshot.
+
+    Returns (screenshot, img_bgr, lookup, image_index, pytesseract). `image` may
+    be None (grab the screen), a path string, or a PIL Image. Raises RuntimeError
+    with a user-friendly message on any hard failure. Shared by scan() and
+    scan_debug() so the two paths can't drift.
     """
     if lookup_path is None:
         lookup_path = _LOOKUP_PATH
@@ -98,41 +127,62 @@ def scan(lookup_path=None, image=None):
         screenshot = image.convert("RGB") if hasattr(image, "convert") else image
 
     img_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-    names = _extract_item_names(img_bgr, pytesseract)
+    return screenshot, img_bgr, lookup, image_index, pytesseract
 
-    if not names:
-        return [], 0, False, []
+
+def _resolve_slots(names, lookup, image_index, *, thresholds, diag_sink=None):
+    """Two-pass resolve shared by scan() and scan_debug().
+
+    Pass 1 (`_resolve`) → Pass 2 (`resolver.resolve_one`) → 0-ducat placeholder,
+    attaching each entry's thumbnail filename. Returns (entries, unresolved).
+
+    `thresholds` is the dict from config_manager.load_ocr_thresholds().
+    When `diag_sink` is a list, one diagnostic dict is appended per slot (aligned
+    with `names` order): resolved_by ("pass1"/"pass2"/"unresolved"), the winning
+    score (Pass 1 difflib ratio or the resolved Pass 2 candidate's score),
+    cleaned + normalized text, and resolver.rank_candidates(norm, index) top-N.
+    """
+    cutoff = thresholds["pass1_cutoff"]
+    anchor = thresholds["pass1_anchor"]
+    whole = thresholds["pass2_whole"]
+    token = thresholds["pass2_token"]
+
+    index = resolver.build_index(lookup)
+    collect = diag_sink is not None
 
     # Pass 1: resolve every detected name from the local cache (no Node).
     entries = []   # per-slot dict, or None for an unresolved name
     misses = []    # (index, normalized_query) for cache misses
+    pass1_scores = {}  # i -> difflib ratio of the winning Pass 1 match (diag only)
     for i, text in enumerate(names):
-        name, value = _resolve(text, lookup)
+        name, value = _resolve(text, lookup, cutoff=cutoff, anchor=anchor)
         if value is not None:
             entries.append({"name": name, "ducats": value, "source": "cache"})
+            if collect:
+                q = _strip_component_blueprint(_normalize(text))
+                pass1_scores[i] = difflib.SequenceMatcher(None, q, name).ratio()
         else:
             entries.append(None)
             norm = _normalize(text)
             if norm:
                 misses.append((i, norm))
 
-    # Pass 2: resolve cache misses against @wfcd/items in one batched call.
-    resolver_unavailable = False
+    # Pass 2: resolve cache misses with the pure-Python robust matcher (the
+    # former Node Pass 2, ported in resolver.py), run over the cache data
+    # already loaded above — no new entries to append, every match is already
+    # a cache key.
     if misses:
-        unique_queries = sorted({q for _, q in misses})
-        fetched, resolver_unavailable = _resolve_via_wfcd(unique_queries)
-        new_entries = {}
+        match_cache = {}
         for i, q in misses:
-            match = fetched.get(q)
+            if q not in match_cache:
+                match_cache[q] = resolver.resolve_one(q, index, whole=whole, token=token)
+            match = match_cache[q]
             if match:
                 entries[i] = {
-                    "name": match["name"],
+                    "name": match["norm"],
                     "ducats": match["ducats"],
                     "source": "fetched",
                 }
-                new_entries[match["name"]] = match["ducats"]
-        if new_entries:
-            _append_cache(lookup_path, new_entries)
 
     # Each detected slot is a real item, so an unresolved slot becomes a 0-ducat
     # placeholder (kept in left-to-right slot order alongside resolved entries).
@@ -152,8 +202,96 @@ def scan(lookup_path=None, image=None):
             image_index.get(entry["name"]) if entry["source"] != "unresolved" else None
         )
 
+    if collect:
+        for i, entry in enumerate(entries):
+            norm = _normalize(names[i])
+            candidates = resolver.rank_candidates(norm, index, n=5)
+            source = entry["source"]
+            if source == "cache":
+                resolved_by = "pass1"
+                score = pass1_scores.get(i, 1.0)
+            elif source == "fetched":
+                resolved_by = "pass2"
+                score = next(
+                    (c["score"] for c in candidates if c["norm"] == entry["name"]),
+                    candidates[0]["score"] if candidates else 0.0,
+                )
+            else:
+                resolved_by = "unresolved"
+                score = candidates[0]["score"] if candidates else 0.0
+            diag_sink.append({
+                "resolved_by": resolved_by,
+                "score": score,
+                "cleaned": names[i],
+                "normalized": norm,
+                "candidates": candidates,
+            })
+
+    return entries, unresolved
+
+
+def scan_debug(image=None, lookup_path=None):
+    """Like scan(), but also build a rich per-slot diagnostic payload for a debug
+    capture. Returns (entries, skipped, unresolved, debug_payload).
+
+    debug_payload carries:
+      screenshot: the full PIL screenshot.
+      thresholds: the four OCR thresholds in effect.
+      slots: a per-slot list (aligned with entries), each with index, bbox, the
+        binary (post-threshold) crop ndarray, the raw color crop ndarray, the
+        raw/cleaned/normalized text, resolved_by, the final `result` entry, the
+        winning `score`, and ranked top-N `candidates`.
+      note: present (explanatory) only in the zero-slots case.
+
+    The zero-slots case still returns a payload (screenshot + empty slot list) so
+    a capture can be written. Raises RuntimeError on any hard failure, exactly
+    like scan().
+    """
+    screenshot, img_bgr, lookup, image_index, pytesseract = _prepare_scan(
+        image, lookup_path
+    )
+    thresholds = config_manager.load_ocr_thresholds()
+    names, geom_diag = _extract_item_names(img_bgr, pytesseract, collect_diag=True)
+
+    if not names:
+        debug_payload = {
+            "screenshot": screenshot,
+            "thresholds": thresholds,
+            "slots": [],
+            "note": "No trade slots detected.",
+        }
+        return [], 0, [], debug_payload
+
+    diag_sink = []
+    entries, unresolved = _resolve_slots(
+        names, lookup, image_index, thresholds=thresholds, diag_sink=diag_sink
+    )
+
+    slots = []
+    for i, entry in enumerate(entries):
+        g = geom_diag[i] if geom_diag and i < len(geom_diag) else {}
+        d = diag_sink[i] if i < len(diag_sink) else {}
+        slots.append({
+            "index": i,
+            "bbox": g.get("bbox"),
+            "binary": g.get("binary"),
+            "crop": g.get("crop"),
+            "raw": g.get("raw", ""),
+            "cleaned": d.get("cleaned", names[i]),
+            "normalized": d.get("normalized", ""),
+            "resolved_by": d.get("resolved_by", "unresolved"),
+            "result": entry,
+            "score": d.get("score", 0.0),
+            "candidates": d.get("candidates", []),
+        })
+
+    debug_payload = {
+        "screenshot": screenshot,
+        "thresholds": thresholds,
+        "slots": slots,
+    }
     skipped = len(unresolved)
-    return entries, skipped, resolver_unavailable, unresolved
+    return entries, skipped, unresolved, debug_payload
 
 
 def _configure_tesseract(pytesseract):
@@ -184,7 +322,7 @@ def _configure_tesseract(pytesseract):
 _FOOTER_WORDS = {"not", "ready", "to", "trade", "add", "items"}
 
 
-def _extract_item_names(img_bgr, pytesseract):
+def _extract_item_names(img_bgr, pytesseract, *, collect_diag=False):
     """Extract the receiving-slot item names from a trade screenshot.
 
     The Trading Post shows the partner's offered (received) items as a row of up
@@ -192,9 +330,14 @@ def _extract_item_names(img_bgr, pytesseract):
     beneath its icon. Strategy: locate the six slot columns geometrically, then
     OCR each name label in isolation with a threshold computed on just that crop.
     Per-crop thresholding is the key over a global pass — the bright item icons
-    otherwise skew the threshold and bury the small label text. Returns cleaned,
-    left-to-right name strings for the filled slots only; the caller normalizes
-    and resolves them.
+    otherwise skew the threshold and bury the small label text.
+
+    Returns (names, diag). `names` is the cleaned, left-to-right name strings for
+    the filled slots only; the caller normalizes and resolves them. `diag` is
+    None unless `collect_diag` is set, in which case it's a list aligned 1:1 with
+    `names`, each entry a dict with the slot's `bbox` (x0, ly0, x1, ly1), its
+    `binary` (post-threshold ndarray Tesseract saw), the raw color `crop`
+    ndarray, and the `raw` pre-`_clean_label` OCR string.
     """
     import cv2
     import numpy as np
@@ -209,28 +352,40 @@ def _extract_item_names(img_bgr, pytesseract):
     # on the bottom (received) row rather than the player's own offer up top.
     ly0, ly1 = int(h * 0.773), int(h * 0.847)
 
-    names = []
+    slots = []  # (center, name, diag-or-None)
     for c in centers:
         x0 = max(0, int(c - colw / 2))
         x1 = min(w, int(c + colw / 2))
         crop = gray[ly0:ly1, x0:x1]
         if crop.size == 0:
             continue
-        crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        upscaled = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
         # A touch of blur smooths the upscaled aliasing; without it some
         # low-contrast labels (dark warframe silhouettes) threshold to nothing.
-        crop = cv2.GaussianBlur(crop, (0, 0), 1)
-        _, binary = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        upscaled = cv2.GaussianBlur(upscaled, (0, 0), 1)
+        _, binary = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         if np.mean(binary) < 127:
             binary = cv2.bitwise_not(binary)  # Tesseract wants dark text on light
         binary = cv2.copyMakeBorder(
             binary, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255
         )
-        text = _clean_label(pytesseract.image_to_string(binary, config="--psm 6"))
+        raw = pytesseract.image_to_string(binary, config="--psm 6")
+        text = _clean_label(raw)
         if text:
-            names.append((c, text))
-    names.sort()  # left-to-right
-    return [name for _, name in names]
+            diag = None
+            if collect_diag:
+                diag = {
+                    "bbox": (x0, ly0, x1, ly1),
+                    "binary": binary,
+                    "crop": img_bgr[ly0:ly1, x0:x1].copy(),
+                    "raw": raw,
+                }
+            slots.append((c, text, diag))
+    slots.sort(key=lambda s: s[0])  # left-to-right
+    names = [name for _, name, _ in slots]
+    if collect_diag:
+        return names, [d for _, _, d in slots]
+    return names, None
 
 
 def _slot_centers(gray, w, h):
@@ -304,32 +459,45 @@ def _ensure_lookup_seeded(path):
     round-trip (or fail entirely when scripts/ isn't bundled) before the cache
     self-warms. The seed is pre-warmed via `npm run generate` and committed at
     assets/seed/ducat_lookup.json.
+
+    Returns the seed JSON text when it couldn't be persisted to `path` (e.g. a
+    read-only install directory), so `_load_lookup` can fall back to using it
+    in-memory for this run; returns None when seeding isn't needed/applicable
+    or the persisted copy now exists.
     """
     if path != _LOOKUP_PATH:
-        return
+        return None
     if os.path.exists(path) or not os.path.exists(_SEED_LOOKUP_PATH):
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+        return None
     try:
         with open(_SEED_LOOKUP_PATH, "r", encoding="utf-8") as f:
             seed = f.read()
     except OSError:
-        return
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(seed)
+        return None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(seed)
+    except OSError:
+        return seed  # Read-only install dir — scan still works read-only this run.
+    return None
 
 
 def _load_lookup(path):
-    """Load and normalize the ducat cache. A missing file means an empty cache.
-
-    The cache is self-warming: unknown items are fetched from @wfcd/items and
-    appended on the fly (see _resolve_via_wfcd), so a fresh install with no cache
-    file is fine. A file that exists but can't be parsed is a real error and is
-    surfaced to the caller.
+    """Load and normalize the ducat cache. A missing file means an empty cache
+    (Pass 2's resolver.resolve_one runs over whatever's in it, so a fresh
+    install with no cache file beyond the seed is fine). A file that exists but
+    can't be parsed is a real error and is surfaced to the caller.
     """
-    _ensure_lookup_seeded(path)
+    fallback_seed = _ensure_lookup_seeded(path)
     if not os.path.exists(path):
-        return {}
+        if fallback_seed is None:
+            return {}
+        try:
+            raw = json.loads(fallback_seed)
+            return {_normalize(k): int(v) for k, v in raw.items()}
+        except (ValueError, TypeError, AttributeError) as e:
+            raise RuntimeError(f"Failed to parse bundled seed cache:\n{e}")
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -356,10 +524,12 @@ def _normalize(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _resolve(ocr_text, lookup):
+def _resolve(ocr_text, lookup, *, cutoff=0.75, anchor=0.70):
     """Return (matched_name, ducat_value), or (None, None) if unresolved.
 
-    matched_name is the clean lookup-table key, not the raw OCR text.
+    matched_name is the clean lookup-table key, not the raw OCR text. `cutoff` is
+    the difflib fuzzy-match cutoff and `anchor` the leading-token similarity gate;
+    the defaults (0.75 / 0.70) reproduce the original hardcoded Pass 1 behavior.
     """
     if not ocr_text:
         return None, None
@@ -382,8 +552,8 @@ def _resolve(ocr_text, lookup):
     # so anchor on the distinctive leading name token before accepting a match.
     # @wfcd names are "<item-name> prime <component>", so a differing first token
     # means a different item — defer those to the robust Node resolver in Pass 2.
-    matches = difflib.get_close_matches(query, lookup.keys(), n=1, cutoff=0.75)
-    if matches and _leading_token_sim(query, matches[0]) >= 0.7:
+    matches = difflib.get_close_matches(query, lookup.keys(), n=1, cutoff=cutoff)
+    if matches and _leading_token_sim(query, matches[0]) >= anchor:
         return matches[0], lookup[matches[0]]
     return None, None
 
@@ -412,81 +582,3 @@ def _leading_token_sim(query, candidate):
     c = candidate.split(None, 1)[0] if candidate else ""
     return difflib.SequenceMatcher(None, q, c).ratio()
 
-
-def _resolve_via_wfcd(queries):
-    """Resolve unknown item names against @wfcd/items via the Node helper.
-
-    Batched: one subprocess call for all queries. Returns
-    (matches, resolver_unavailable) where matches maps a normalized query to
-    {"name": normalized_canonical_name, "ducats": int}. resolver_unavailable is
-    True when Node or scripts/node_modules is missing, or the call otherwise
-    fails — callers treat that as "leave these unresolved" rather than erroring.
-    """
-    script_dir = resource_path("scripts")
-    script = os.path.join(script_dir, "wf_ducat_lookup.js")
-    node_modules = os.path.join(script_dir, "node_modules")
-    if not os.path.exists(script) or not os.path.isdir(node_modules):
-        return {}, True
-
-    cmd = ["node", "wf_ducat_lookup.js", "--resolve-json", *queries]
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=script_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}, True
-    if proc.returncode != 0:
-        return {}, True
-
-    try:
-        data = json.loads(proc.stdout)
-    except (ValueError, TypeError):
-        return {}, True
-    if not isinstance(data, list):
-        return {}, True
-
-    matches = {}
-    for entry in data:
-        query = entry.get("query")
-        name = entry.get("name")
-        ducats = entry.get("ducats")
-        if query and name and ducats is not None:
-            try:
-                matches[_normalize(query)] = {
-                    "name": _normalize(name),
-                    "ducats": int(ducats),
-                }
-            except (TypeError, ValueError):
-                continue
-    return matches, False
-
-
-def _append_cache(path, new_entries):
-    """Merge newly-resolved {name: ducats} into the cache JSON via an atomic write."""
-    existing = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                existing = loaded
-        except (OSError, ValueError):
-            existing = {}
-
-    changed = False
-    for name, ducats in new_entries.items():
-        if existing.get(name) != ducats:
-            existing[name] = ducats
-            changed = True
-    if not changed:
-        return
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)

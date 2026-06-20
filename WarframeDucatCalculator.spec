@@ -5,8 +5,9 @@
 # Writable data (configs/, data/) is intentionally NOT bundled here — it lives
 # beside the built exe and is created/seeded at runtime (see paths.py and
 # ocr_scanner._ensure_lookup_seeded). scripts/ (the Node resolver) is also not
-# bundled; the seeded ducat cache covers all tradable prime parts and the
-# scanner already fails soft when scripts/ is absent.
+# bundled and isn't needed at runtime at all — ocr_scanner.py's OCR resolution
+# runs entirely through resolver.py (a pure-Python port), which PyInstaller
+# picks up automatically as a regular import, against the seeded ducat cache.
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
